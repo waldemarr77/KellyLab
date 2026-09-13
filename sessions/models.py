@@ -1,5 +1,7 @@
 from django.db import models
+
 from users.models import CustomUser
+
 
 class Session(models.Model):
     STATUS_CHOICES = [
