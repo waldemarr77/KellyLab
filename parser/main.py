@@ -57,6 +57,7 @@ def find_quetion(text):
     normalized = re.sub(r'\s+', ' ', text)
     questions = re.findall(r'[^.!?]*\?', normalized)
     questions = [q.strip() for q in questions if q.strip()]
+    questions = [re.sub(r'^\d+\s*[\.\)\-]?\s*', '', q) for q in questions]
     return questions
 
 
