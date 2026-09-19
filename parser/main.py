@@ -19,21 +19,34 @@ app = FastAPI()
 async def parser_pdf(file):
     content = await file.read()
     text = ""
-    with pdfplumber.open(io.BytesIO(content)) as pdf:
-        for page in pdf.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text + "\n"
+    try:
+        with pdfplumber.open(io.BytesIO(content)) as pdf:
+            for page in pdf.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text + "\n"
+    except Exception:
+        raise HTTPException(status_code=400, detail="Не вдалося прочитати PDF файл, можливо він пошкоджений")
     return text
 
 
 async def parser_docx(file):
     content = await file.read()
-    doc = docx.Document(io.BytesIO(content))
     text = ""
-    for paragraph in doc.paragraphs:
-        text += paragraph.text + "\n"
+    try:
+        doc = docx.Document(io.BytesIO(content))
+        for paragraph in doc.paragraphs:
+            text += paragraph.text + "\n"
+
+        for tables in doc.tables:
+            for row in tables.rows:
+                for cell in row.cells:
+                    text += cell.text + "\n"
+
+    except Exception:
+        raise HTTPException(status_code=400, detail="Не вдалося прочитати DOCX файл, можливо він пошкоджений")
     return text
+    
 
 
 async def parser_txt(file):
@@ -54,9 +67,7 @@ async def tru_format(file_format, file):
 
 
 def find_quetion(text):
-    normalized = re.sub(r'\s+', ' ', text)
-    questions = re.findall(r'[^.!?]*\?', normalized)
-    questions = [q.strip() for q in questions if q.strip()]
+    questions = [q.strip() for q in text.splitlines() if q.strip().endswith("?")]
     questions = [re.sub(r'^\d+\s*[\.\)\-]?\s*', '', q) for q in questions]
     return questions
 
@@ -65,7 +76,7 @@ def find_quetion(text):
 async def parser_file(file: UploadFile):
     try:
         start = time.time()
-        file_format = file.filename.split(".")[-1]
+        file_format = file.filename.split(".")[-1].lower()
         file_size = 0
 
         if file_format in ("txt", "docx", "pdf"):
