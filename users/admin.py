@@ -29,8 +29,6 @@ class CustomUserAdmin(UserAdmin):
     search_fields = [
         'username',
         'email',
-        'first_name',
-        'last_name',
         'target_position',
     ]
 
@@ -53,8 +51,7 @@ class CustomUserAdmin(UserAdmin):
     ) + (
         ('Додаткова інформація', {
             'fields': (
-                'first_name', 'last_name', 'target_position', 'experience_level',
-                'avatar',
+                'target_position', 'experience_level', 'avatar',
             ),
         }),
     )
