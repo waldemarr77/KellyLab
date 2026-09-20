@@ -7,13 +7,14 @@ from .models import CustomUser
 @admin.register(CustomUser)
 class CustomUserAdmin(UserAdmin):
     list_display = [
-        'username', 
-        'email', 
-        'target_position', 
+        'email',
+        'username',
+        'target_position',
         'experience_level',
         'is_active',
         'is_staff',
         'is_superuser',
+        'date_joined',
         'last_login',
     ]
 
@@ -22,16 +23,20 @@ class CustomUserAdmin(UserAdmin):
         'is_active',
         'is_staff',
         'is_superuser',
+        'groups',
     ]
 
     search_fields = [
-        'username', 
-        'email', 
+        'username',
+        'email',
+        'first_name',
+        'last_name',
         'target_position',
     ]
-    
-    readonly_fields = ['date_joined', 'last_login',]
-    ordering = ['username',]
+
+    readonly_fields = ['date_joined', 'last_login']
+    ordering = ['username']
+    date_hierarchy = 'date_joined'
 
     fieldsets = UserAdmin.fieldsets + (
         ('Підготовка до співбесіди', {
@@ -42,8 +47,14 @@ class CustomUserAdmin(UserAdmin):
         }),
     )
 
-    add_fieldsets = UserAdmin.add_fieldsets + (
+    add_fieldsets = tuple(
+        (title, {**options, 'fields': ('email', *options['fields'])})
+        for title, options in UserAdmin.add_fieldsets
+    ) + (
         ('Додаткова інформація', {
-            'fields': ('email', 'target_position', 'experience_level'),
+            'fields': (
+                'first_name', 'last_name', 'target_position', 'experience_level',
+                'avatar',
+            ),
         }),
     )
