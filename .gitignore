@@ -208,6 +208,8 @@ tempCodeRunnerFile.py
 
 # PyPI configuration file
 .pypirc
+examples/demo-export.txt
+/tmp/
 
 # Marimo
 marimo/_static/
