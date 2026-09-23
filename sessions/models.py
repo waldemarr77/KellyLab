@@ -31,6 +31,7 @@ class Session(models.Model):
         blank=True, 
         null=True, 
         verbose_name='ID задачі')
+    error_message = models.TextField(blank=True, verbose_name='Пояснення помилки')
     created_at = models.DateTimeField(
         auto_now_add=True, 
         verbose_name='Створено')
