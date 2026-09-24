@@ -34,8 +34,9 @@ def test_normal_questions_list():
     assert response.status_code == 200
     data = response.json()
     assert data["questions"] == [
-        "Що таке Python?",
-        "Чим list відрізняється від tuple?",
+    "Що таке Python?",
+    "Розкажи про типи даних.",
+    "Чим list відрізняється від tuple?",
     ]
 
 
