@@ -4,7 +4,7 @@ from rest_framework import mixins, viewsets
 from rest_framework.response import Response
 
 from config.exceptions import Conflict
-from sessions.models import Session
+from interviews.models import Session
 
 from .models import Question
 from .serializers import QuestionSerializer

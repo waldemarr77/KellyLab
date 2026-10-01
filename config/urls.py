@@ -22,8 +22,8 @@ from rest_framework.permissions import AllowAny
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenRefreshView
 
+from interviews.views import SessionViewSet
 from questions.views import QuestionViewSet
-from sessions.views import SessionViewSet
 from users.views import EmailTokenView, ProfileView, RegisterView
 
 router = DefaultRouter()

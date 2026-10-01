@@ -50,7 +50,7 @@ INSTALLED_APPS = [
     'exports.apps.ExportsConfig',
     'practice.apps.PracticeConfig',
     'questions.apps.QuestionsConfig',
-    'sessions.apps.SessionsConfig',
+    'interviews.apps.InterviewsConfig',
     'users.apps.UsersConfig',
 ]
 

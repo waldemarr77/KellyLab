@@ -1,6 +1,6 @@
 from django.db import models
 
-from sessions.models import Session
+from interviews.models import Session
 
 
 class FormatExport(models.TextChoices):

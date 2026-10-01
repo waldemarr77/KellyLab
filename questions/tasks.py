@@ -3,7 +3,7 @@ import logging
 from celery import shared_task
 from django.db import transaction
 
-from sessions.models import Session
+from interviews.models import Session
 
 from .ai import generate_answer
 from .models import Question

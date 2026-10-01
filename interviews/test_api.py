@@ -130,7 +130,7 @@ class InterviewFlowTests(APITestCase):
         self.assertEqual(self.client.get(self.url + 'export/').status_code, 409)
         self.assertEqual(self.client.patch(f'/api/questions/{question.pk}/', {'text': 'new'}).status_code, 409)
 
-    @patch('sessions.views.generate_session_answers.apply_async', side_effect=ConnectionError('private'))
+    @patch('interviews.views.generate_session_answers.apply_async', side_effect=ConnectionError('private'))
     def test_broker_failure_is_visible_and_retryable(self, publish):
         self.import_text()
         self.assertEqual(self.client.post(self.url + 'generate/').status_code, 503)
