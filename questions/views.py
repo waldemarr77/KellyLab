@@ -22,7 +22,7 @@ class QuestionViewSet(mixins.RetrieveModelMixin, mixins.UpdateModelMixin, viewse
         question = self.get_object()
         with transaction.atomic():
             session = Session.objects.select_for_update().get(pk=question.session_id)
-            if session.status == SessionStatus.PROCESSING:
+            if session.is_busy:
                 raise Conflict()
             question.refresh_from_db()
             serializer = self.get_serializer(question, data=request.data, partial=True)

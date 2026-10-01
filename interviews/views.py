@@ -34,7 +34,7 @@ class SessionViewSet(viewsets.ModelViewSet):
     def destroy(self, request, *args, **kwargs):
         with transaction.atomic():
             session = self.get_queryset().select_for_update().get(pk=self.get_object().pk)
-            if session.status == SessionStatus.PROCESSING:
+            if session.is_busy:
                 raise Conflict()
             session.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
@@ -46,7 +46,7 @@ class SessionViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         with transaction.atomic():
             session = self.get_queryset().select_for_update().get(pk=session.pk)
-            if session.status == SessionStatus.PROCESSING:
+            if session.is_busy:
                 raise Conflict()
             if session.questions.exists():
                 raise ValidationError('Імпорт доступний лише для порожньої сесії. Створи нову.')
@@ -73,7 +73,7 @@ class SessionViewSet(viewsets.ModelViewSet):
         run_id = uuid4().hex
         with transaction.atomic():
             session = self.get_queryset().select_for_update().get(pk=session.pk)
-            if session.status == SessionStatus.PROCESSING:
+            if session.is_busy:
                 raise Conflict()
             if not session.questions.exists():
                 raise ValidationError('Спочатку імпортуй питання.')
@@ -98,7 +98,7 @@ class SessionViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['get'], url_path='export')
     def export_txt(self, request, pk=None):
         session = self.get_object()
-        if session.status == SessionStatus.PROCESSING:
+        if session.is_busy:
             raise Conflict()
         lines = [session.name, '']
         for question in session.questions.order_by('order', 'id'):

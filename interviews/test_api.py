@@ -1,7 +1,9 @@
-from unittest.mock import patch
+from datetime import timedelta
+from unittest.mock import MagicMock, patch
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import override_settings
+from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from questions.models import Question
@@ -11,7 +13,9 @@ from users.models import CustomUser
 from .models import Session
 
 
-@override_settings(CELERY_TASK_ALWAYS_EAGER=True, GEMINI_API_KEY='test-key', GEMINI_MODEL='test-model')
+@override_settings(
+    CELERY_TASK_ALWAYS_EAGER=True, GEMINI_API_KEY='test-key', GEMINI_MODEL='test-model', AI_RETRY_DELAY_SECONDS=0,
+)
 class InterviewFlowTests(APITestCase):
     def setUp(self):
         # Mock only the external SDK; exercise our real provider and task code.
@@ -138,27 +142,63 @@ class InterviewFlowTests(APITestCase):
         self.assertEqual(self.session.status, 'failed')
         self.assertNotIn('private', self.session.error_message)
 
-    @patch('questions.tasks.generate_answer', side_effect=['first', RuntimeError('secret-key')])
-    def test_provider_failure_does_not_partially_write_answers(self, provider):
+    def test_provider_failure_keeps_finished_answers(self):
+        provider = self.ai_client.models.generate_content
+        provider.side_effect = [MagicMock(text='first'), *[RuntimeError('secret-key')] * 3]
         self.import_text()
         self.client.post(self.url + 'generate/')
         self.session.refresh_from_db()
         self.assertEqual(self.session.status, 'failed')
         self.assertNotIn('secret-key', self.session.error_message)
-        self.assertFalse(self.session.questions.exclude(ai_answer=None).exists())
+        first, second = self.session.questions.order_by('order')
+        self.assertEqual(first.ai_answer, 'first')
+        self.assertIsNone(second.ai_answer)
         provider.side_effect = None
-        provider.return_value = 'Recovered'
+        provider.return_value.text = 'Recovered'
         self.assertEqual(self.client.post(self.url + 'generate/').data['status'], 'ready')
 
-    @patch('questions.tasks.generate_answer')
-    def test_old_task_cannot_overwrite_new_run(self, provider):
+    def test_transient_provider_error_is_retried(self):
+        provider = self.ai_client.models.generate_content
+        provider.side_effect = [RuntimeError('timeout'), MagicMock(text='A1'), MagicMock(text='A2')]
+        self.import_text()
+        self.assertEqual(self.client.post(self.url + 'generate/').data['status'], 'ready')
+        self.assertEqual(provider.call_count, 3)
+        self.assertEqual(list(self.session.questions.values_list('ai_answer', flat=True)), ['A1', 'A2'])
+
+    def test_stuck_processing_session_can_be_restarted_and_deleted(self):
+        self.import_text()
+        Session.objects.filter(pk=self.session.pk).update(
+            status='processing', celery_task_id='dead-run', updated_at=timezone.now() - timedelta(hours=1),
+        )
+        self.assertEqual(self.client.post(self.url + 'generate/').data['status'], 'ready')
+        Session.objects.filter(pk=self.session.pk).update(
+            status='processing', updated_at=timezone.now() - timedelta(hours=1),
+        )
+        self.assertEqual(self.client.delete(self.url).status_code, 204)
+
+    def test_old_task_cannot_overwrite_new_run(self):
         self.session.status = 'processing'
         self.session.celery_task_id = 'new-run'
         self.session.save()
         generate_session_answers(self.session.pk, 'old-run')
-        provider.assert_not_called()
+        self.ai_client.models.generate_content.assert_not_called()
         self.session.refresh_from_db()
         self.assertEqual(self.session.status, 'processing')
+
+    def test_task_stops_when_a_newer_run_takes_over(self):
+        self.import_text()
+        self.session.status = 'processing'
+        self.session.celery_task_id = 'old-run'
+        self.session.save()
+
+        def take_over(**kwargs):
+            Session.objects.filter(pk=self.session.pk).update(celery_task_id='new-run')
+            return MagicMock(text='stale answer')
+
+        self.ai_client.models.generate_content.side_effect = take_over
+        generate_session_answers(self.session.pk, 'old-run')
+        self.assertEqual(self.ai_client.models.generate_content.call_count, 1)
+        self.assertFalse(self.session.questions.exclude(ai_answer=None).exists())
 
     def test_regeneration_preserves_user_answer(self):
         self.import_text()

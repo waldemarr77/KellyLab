@@ -1,4 +1,6 @@
+from django.conf import settings
 from django.db import models
+from django.utils import timezone
 
 from users.models import CustomUser
 
@@ -48,3 +50,11 @@ class Session(models.Model):
 
     def __str__(self):
         return f'{self.user} - {self.name}'
+
+    @property
+    def is_busy(self):
+        """A run is active while it keeps saving answers; a silent one is considered dead."""
+        return (
+            self.status == SessionStatus.PROCESSING
+            and self.updated_at > timezone.now() - settings.GENERATION_STALE_AFTER
+        )

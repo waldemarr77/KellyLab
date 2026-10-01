@@ -1,4 +1,5 @@
 import os
+from datetime import timedelta
 from pathlib import Path
 
 from django.core.exceptions import ImproperlyConfigured
@@ -121,8 +122,16 @@ CELERY_TASK_ALWAYS_EAGER = env_bool('CELERY_TASK_ALWAYS_EAGER')
 CELERY_TASK_IGNORE_RESULT = True
 CELERY_BROKER_CONNECTION_TIMEOUT = 3
 CELERY_TASK_PUBLISH_RETRY = False
+# Re-deliver a task if the worker dies mid-run instead of losing it.
+CELERY_TASK_ACKS_LATE = True
+CELERY_TASK_REJECT_ON_WORKER_LOST = True
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
 GEMINI_MODEL = os.getenv('GEMINI_MODEL', '')
+AI_MAX_ATTEMPTS = 3
+AI_RETRY_DELAY_SECONDS = 2
+# A processing session without saved progress for this long is treated as stuck
+# and can be regenerated or deleted. Must exceed the worst case for one question.
+GENERATION_STALE_AFTER = timedelta(minutes=10)
 DATA_UPLOAD_MAX_MEMORY_SIZE = 1024 * 1024
 FILE_UPLOAD_MAX_MEMORY_SIZE = 1024 * 1024
 
