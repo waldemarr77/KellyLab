@@ -26,6 +26,8 @@
 
 ## Майбутні фічі (в планах)
 - Голосовий асистент для усної підготовки до співбесід
+- Семантичний пошук по питаннях (pgvector)
+- Резервна модель (Llama), якщо Gemini недоступний
 
 ---
 
@@ -33,10 +35,9 @@
 
 ### Мій бекенд
 - Python, Django, Django REST Framework
-- PostgreSQL + pgvector (семантичний пошук)
+- PostgreSQL
 - Redis + Celery (фонова обробка AI)
-- LangChain, LangGraph, HuggingFace
-- AI: Gemini (gemini-1.5-flash) як основний, Llama як fallback
+- AI: Gemini через `google-genai`, модель задається в `GEMINI_MODEL`
 
 ### Бекенд колеги (151metr)
 - FastAPI
