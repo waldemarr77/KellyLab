@@ -3,13 +3,14 @@ from django.db import models
 from users.models import CustomUser
 
 
+class SessionStatus(models.TextChoices):
+    CREATED = 'created', 'Сесія створена'
+    PROCESSING = 'processing', 'Обробка'
+    READY = 'ready', 'Готово'
+    FAILED = 'failed', 'Помилка'
+
+
 class Session(models.Model):
-    STATUS_CHOICES = [
-        ('created', 'Сесія створена'),
-        ('processing', 'Обробка'),
-        ('ready', 'Готово'),
-        ('failed', 'Помилка'),
-    ]
     user = models.ForeignKey(
         CustomUser,
         on_delete=models.CASCADE,
@@ -22,8 +23,8 @@ class Session(models.Model):
         verbose_name='Назва сесії')
     status = models.CharField(
         max_length=20,
-        default='created',
-        choices=STATUS_CHOICES,
+        default=SessionStatus.CREATED,
+        choices=SessionStatus.choices,
         verbose_name='Статус'
     )
     celery_task_id = models.CharField(

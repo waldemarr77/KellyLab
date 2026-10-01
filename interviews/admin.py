@@ -17,7 +17,7 @@ class SessionAdmin(admin.ModelAdmin):
     ]
     list_filter = ['status']
     search_fields = [
-        'user__username',
+        'user__email',
         'name',
         'celery_task_id',
     ]

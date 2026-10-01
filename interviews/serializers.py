@@ -6,8 +6,8 @@ from .models import Session
 class SessionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Session
-        fields = ('id', 'name', 'status', 'celery_task_id', 'error_message', 'created_at', 'updated_at')
-        read_only_fields = ('id', 'status', 'celery_task_id', 'error_message', 'created_at', 'updated_at')
+        fields = ('id', 'name', 'status', 'error_message', 'created_at', 'updated_at')
+        read_only_fields = ('id', 'status', 'error_message', 'created_at', 'updated_at')
 
 
 class ImportSerializer(serializers.Serializer):
