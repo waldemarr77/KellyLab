@@ -52,7 +52,6 @@ jobs:
       DB_HOST: localhost
       DB_PORT: 5432
       SECRET_KEY: ci-test-secret-key-at-least-32-characters
-      AI_BACKEND: demo
       CELERY_TASK_ALWAYS_EAGER: "true"
 
     steps:

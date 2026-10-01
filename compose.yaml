@@ -12,7 +12,6 @@ x-app: &app
     DB_PASSWORD: kellylab-local
     CELERY_BROKER_URL: redis://redis:6379/0
     CELERY_TASK_ALWAYS_EAGER: "false"
-    AI_BACKEND: ${AI_BACKEND:-demo}
     GEMINI_API_KEY: ${GEMINI_API_KEY:-}
     GEMINI_MODEL: ${GEMINI_MODEL:-}
 

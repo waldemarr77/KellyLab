@@ -1,18 +1,8 @@
-"""One small provider boundary: tests and demo never call an external model."""
+"""Generate interview answers through the Gemini API."""
 from django.conf import settings
 
 
 def generate_answer(question, position, level):
-    if settings.AI_BACKEND == 'demo':
-        return (
-            '[ДЕМО — це шаблон, а не відповідь AI]\n'
-            f'Питання: {question}\n'
-            f'Позиція: {position or "не вказана"}; рівень: {level or "не вказаний"}.\n'
-            'План відповіді: визначення → приклад → обмеження → застосування.\n'
-            'Для справжніх відповідей увімкни Gemini згідно з README.'
-        )
-    if settings.AI_BACKEND != 'gemini':
-        raise ValueError('Unknown AI_BACKEND')
     if not settings.GEMINI_API_KEY or not settings.GEMINI_MODEL:
         raise ValueError('GEMINI_API_KEY and GEMINI_MODEL are required')
 

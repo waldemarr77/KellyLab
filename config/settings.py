@@ -115,7 +115,7 @@ SWAGGER_SETTINGS = {
     'USE_SESSION_AUTH': False,
 }
 
-# SQLite is an explicit option for an offline demo and isolated tests.
+# SQLite is an explicit option for local development and isolated tests.
 if os.getenv('USE_SQLITE', 'false').lower() == 'true':
     DATABASES = {'default': {
         'ENGINE': 'django.db.backends.sqlite3', 'NAME': BASE_DIR / 'db.sqlite3',
@@ -126,7 +126,6 @@ CELERY_TASK_ALWAYS_EAGER = os.getenv('CELERY_TASK_ALWAYS_EAGER', 'false').lower(
 CELERY_TASK_IGNORE_RESULT = True
 CELERY_BROKER_CONNECTION_TIMEOUT = 3
 CELERY_TASK_PUBLISH_RETRY = False
-AI_BACKEND = os.getenv('AI_BACKEND', 'demo')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
 GEMINI_MODEL = os.getenv('GEMINI_MODEL', '')
 DATA_UPLOAD_MAX_MEMORY_SIZE = 1024 * 1024

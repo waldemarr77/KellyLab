@@ -8,7 +8,7 @@ Backend для підготовки до технічних співбесід. 
 - Сесії та картки питань, доступні лише власнику.
 - Імпорт тексту або UTF-8 TXT: одне питання на рядок, максимум 50 питань, 2000 символів на питання та 100 KB на файл. Повторний імпорт у заповнену сесію відхиляється.
 - Генерація через Celery + Redis; для локального запуску можна виконувати задачі синхронно.
-- Gemini через `google-genai` або явно позначений демошаблон без мережі.
+- Генерація відповідей Gemini через `google-genai`.
 - Окреме зберігання AI-відповіді та власної відповіді; повторна генерація зберігає власні правки.
 - TXT-експорт, Swagger, інтеграційні тести й CI з PostgreSQL.
 
@@ -16,12 +16,11 @@ Backend для підготовки до технічних співбесід. 
 
 ## Локальний запуск у PowerShell
 
-З наявним `venv`:
+Спочатку в наявному `.env` задай `GEMINI_API_KEY` і `GEMINI_MODEL` (дивись нижче). З наявним `venv`:
 
 ```powershell
 $env:USE_SQLITE = 'true'
 $env:CELERY_TASK_ALWAYS_EAGER = 'true'
-$env:AI_BACKEND = 'demo'
 .\venv\Scripts\python.exe manage.py migrate
 .\venv\Scripts\python.exe manage.py runserver
 ```
@@ -33,15 +32,15 @@ $env:AI_BACKEND = 'demo'
 В іншому PowerShell можна запустити весь сценарій:
 
 ```powershell
-.\examples\demo.ps1
+.\examples\smoke-test.ps1
 ```
 
-Скрипт створює окремого користувача, імпортує `examples/questions.txt` і записує `examples/demo-export.txt`. Пароль і токени не виводяться. У деморежимі результати — шаблони для перевірки роботи API, а не навчальні відповіді AI.
+Скрипт створює окремого користувача, імпортує `examples/questions.txt`, робить п'ять справжніх запитів до Gemini і записує `examples/smoke-export.txt`. Пароль і токени не виводяться. Без ключа або ID моделі генерація завершиться помилкою; підстановки відповідей немає.
 
 ## Docker: PostgreSQL + Redis + Django + Celery
 
 ```powershell
-docker compose --env-file .env.example up --build
+docker compose --env-file .env up --build
 ```
 
 Міграції виконує окремий сервіс перед стартом web/worker. API: http://127.0.0.1:8000/api/docs/. PostgreSQL зберігається в named volume. `docker compose down` зупиняє сервіси, зберігаючи дані. Це конфігурація для локальної розробки, з Django development server.
@@ -51,14 +50,13 @@ docker compose --env-file .env.example up --build
 У `.env` або змінних середовища встанови:
 
 ```dotenv
-AI_BACKEND=gemini
 GEMINI_API_KEY=your-key
 GEMINI_MODEL=model-id-available-to-your-account
 ```
 
 Перезапусти Django і worker; у Docker використай `docker compose --env-file .env up --build` із власними значеннями. Якщо секрет містить `$`, у dotenv візьми його в одинарні лапки, щоб Compose не сприйняв частину секрету як змінну. ID моделі задається явно, оскільки доступність залежить від акаунта. Питання, посада та рівень надсилаються в API Google; запити можуть бути платними. SDK використовується за [офіційною документацією Google](https://googleapis.github.io/python-genai/).
 
-Для фонового режиму поза Docker потрібні Redis і `CELERY_TASK_ALWAYS_EAGER=false`; worker: `celery -A config worker --loglevel=info` у Linux/WSL. Для локальної Windows-демонстрації простіше eager або Docker. Eager блокує HTTP-запит до завершення генерації.
+Для фонового режиму поза Docker потрібні Redis і `CELERY_TASK_ALWAYS_EAGER=false`; worker: `celery -A config worker --loglevel=info` у Linux/WSL. Для локального запуску на Windows простіше eager або Docker. Eager блокує HTTP-запит до завершення генерації, але теж звертається до справжнього Gemini.
 
 ## API
 
@@ -89,7 +87,7 @@ GEMINI_MODEL=model-id-available-to-your-account
 .\venv\Scripts\python.exe manage.py makemigrations --check --dry-run --settings=config.test_settings
 ```
 
-Локальні тести використовують окрему SQLite-базу в пам'яті та демопровайдер. CI запускає їх на PostgreSQL. Вони перевіряють JWT, повний сценарій, ізоляцію користувачів, валідацію файлів, помилки AI/черги та збереження правок. Реальні Gemini, Redis, Docker і конкурентні блокування PostgreSQL потребують окремого інтеграційного запуску.
+Локальні тести використовують окрему SQLite-базу в пам'яті. Зовнішній SDK Gemini заміняється через `unittest.mock` лише всередині тестів; у застосунку генерація завжди звертається до Gemini. CI запускає тести на PostgreSQL. Перевіряються JWT, повний сценарій, ізоляція користувачів, валідація файлів, помилки AI/черги, відсутня конфігурація та збереження правок. Живі Gemini, Redis, Docker і конкурентні блокування PostgreSQL потребують окремого інтеграційного запуску.
 
 В MVP немає автоматичного відновлення задач після аварійного завершення worker: сесія може залишитись `processing`. Для ручного відновлення після перевірки, що старий worker зупинений, адміністратор змінює статус на `failed` і користувач запускає генерацію повторно. Для production потрібні timeout/recovery, обмеження частоти AI-запитів, контроль бюджету й перевірка налаштувань розгортання.
 

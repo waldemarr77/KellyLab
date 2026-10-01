@@ -11,9 +11,14 @@ from users.models import CustomUser
 from .models import Session
 
 
-@override_settings(CELERY_TASK_ALWAYS_EAGER=True, AI_BACKEND='demo')
+@override_settings(CELERY_TASK_ALWAYS_EAGER=True, GEMINI_API_KEY='test-key', GEMINI_MODEL='test-model')
 class InterviewFlowTests(APITestCase):
     def setUp(self):
+        # Mock only the external SDK; exercise our real provider and task code.
+        client_patch = patch('google.genai.Client')
+        self.addCleanup(client_patch.stop)
+        self.ai_client = client_patch.start().return_value.__enter__.return_value
+        self.ai_client.models.generate_content.return_value.text = 'Test provider answer'
         self.user = CustomUser.objects.create_user(
             username='owner', email='owner@example.com', password='Strong-password-762!',
         )
@@ -36,7 +41,8 @@ class InterviewFlowTests(APITestCase):
         self.assertEqual(generated.data['status'], 'ready')
         cards = self.client.get(self.url + 'questions/').data['results']
         self.assertEqual(len(cards), 2)
-        self.assertIn('[ДЕМО', cards[0]['ai_answer'])
+        self.assertEqual(cards[0]['ai_answer'], 'Test provider answer')
+        self.assertEqual(self.ai_client.models.generate_content.call_count, 2)
         edited = self.client.patch(
             f'/api/questions/{cards[0]["id"]}/', {'user_answer': 'Моя відповідь'}, format='json',
         )
@@ -76,6 +82,14 @@ class InterviewFlowTests(APITestCase):
 
     def test_empty_session_cannot_generate(self):
         self.assertEqual(self.client.post(self.url + 'generate/').status_code, 400)
+
+    @override_settings(GEMINI_API_KEY='', GEMINI_MODEL='')
+    def test_missing_gemini_configuration_fails_without_saving_answers(self):
+        self.import_text()
+        response = self.client.post(self.url + 'generate/')
+        self.assertEqual(response.data['status'], 'failed')
+        self.assertFalse(self.session.questions.exclude(ai_answer=None).exists())
+        self.ai_client.models.generate_content.assert_not_called()
 
     def test_import_does_not_replace_existing_work(self):
         self.import_text()
