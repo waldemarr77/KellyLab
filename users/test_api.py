@@ -1,3 +1,4 @@
+from django.core.cache import cache
 from rest_framework.test import APITestCase
 
 from .models import CustomUser
@@ -5,6 +6,10 @@ from .models import CustomUser
 
 class AuthenticationTests(APITestCase):
     credentials = {'email': 'candidate@example.com', 'password': 'A-strong-password-874!'}
+
+    def setUp(self):
+        # Throttle counters live in the cache and would leak between tests.
+        cache.clear()
 
     def test_registration_login_refresh_and_profile(self):
         response = self.client.post('/api/auth/register/', self.credentials)
@@ -36,3 +41,9 @@ class AuthenticationTests(APITestCase):
         self.client.post('/api/auth/register/', self.credentials)
         result = self.client.post('/api/auth/token/', {**self.credentials, 'password': 'wrong'})
         self.assertEqual(result.status_code, 401)
+
+    def test_login_attempts_are_throttled(self):
+        wrong = {**self.credentials, 'password': 'wrong'}
+        statuses = [self.client.post('/api/auth/token/', wrong).status_code for _ in range(11)]
+        self.assertEqual(statuses[:10], [401] * 10)
+        self.assertEqual(statuses[10], 429)
