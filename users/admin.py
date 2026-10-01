@@ -33,15 +33,12 @@ class CustomUserAdmin(UserAdmin):
     ]
 
     readonly_fields = ['date_joined', 'last_login']
-    ordering = ['username']
+    ordering = ['-date_joined']
     date_hierarchy = 'date_joined'
 
     fieldsets = UserAdmin.fieldsets + (
         ('Підготовка до співбесіди', {
             'fields': ('target_position', 'experience_level'),
-        }),
-        ('Аватар', {
-            'fields': ('avatar',),
         }),
     )
 
@@ -51,7 +48,7 @@ class CustomUserAdmin(UserAdmin):
     ) + (
         ('Додаткова інформація', {
             'fields': (
-                'target_position', 'experience_level', 'avatar',
+                'target_position', 'experience_level',
             ),
         }),
     )
