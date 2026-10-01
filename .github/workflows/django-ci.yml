@@ -19,9 +19,7 @@ jobs:
           python-version: '3.13'
 
       - name: Install dependencies
-        run: |
-          pip install -r requirements-runtime.txt
-          pip install ruff
+        run: pip install -r requirements-dev.txt
 
       - name: Lint with ruff
         run: ruff check .
@@ -63,7 +61,7 @@ jobs:
           python-version: '3.13'
 
       - name: Install dependencies
-        run: pip install -r requirements-runtime.txt
+        run: pip install -r requirements.txt
 
       - name: Check migration consistency
         run: python manage.py makemigrations --check --dry-run

@@ -25,7 +25,7 @@ $env:CELERY_TASK_ALWAYS_EAGER = 'true'
 .\venv\Scripts\python.exe manage.py runserver
 ```
 
-Існуючий `.env` не змінювався. Змінні поточного процесу мають пріоритет. На чистій машині потрібен Python 3.13: `python -m venv venv`, потім `.\venv\Scripts\python.exe -m pip install -r requirements-runtime.txt`. Скопіюй `.env.example` у `.env`, лише якщо власного `.env` ще немає. `requirements.txt` містить попередній повний стек для експериментів; API використовує коротший `requirements-runtime.txt`.
+Існуючий `.env` не змінювався. Змінні поточного процесу мають пріоритет. На чистій машині потрібен Python 3.13: `python -m venv venv`, потім `.\venv\Scripts\python.exe -m pip install -r requirements-dev.txt`. Скопіюй `.env.example` у `.env`, лише якщо власного `.env` ще немає. `requirements.txt` містить залежності застосунку, `requirements-dev.txt` додає інструменти розробки (ruff).
 
 Відкрий http://127.0.0.1:8000/api/docs/. У Swagger після отримання JWT натисни **Authorize** і введи `Bearer <access>`.
 
