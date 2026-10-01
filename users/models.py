@@ -11,18 +11,20 @@ class CustomUser(AbstractUser):
     ]
 
     email = models.EmailField(unique=True, verbose_name='Електронна пошта')
-    avatar = models.ImageField(upload_to='avatars/', blank=True, null=True, verbose_name='Аватарка')
-    target_position = models.CharField(max_length=50, blank=True, null=True, verbose_name='Посада') # for example 'Python Backend Developer'
-    experience_level = models.CharField(max_length=10, choices=LEVEL_CHOICES, blank=True, null=True, verbose_name='Рівень')
+    # For example 'Python Backend Developer'.
+    target_position = models.CharField(max_length=50, blank=True, default='', verbose_name='Посада')
+    experience_level = models.CharField(
+        max_length=10, choices=LEVEL_CHOICES, blank=True, default='', verbose_name='Рівень',
+    )
 
     USERNAME_FIELD = "email"
+    # username is a generated technical value; email is the login.
     REQUIRED_FIELDS = ["username"]
 
-
     class Meta:
-        ordering = ['-username',]
+        ordering = ['-date_joined']
         verbose_name = 'Користувач'
         verbose_name_plural = 'Користувачі'
 
     def __str__(self):
-        return f'{self.username} {self.email}'
+        return self.email

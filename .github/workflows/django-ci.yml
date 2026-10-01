@@ -19,9 +19,7 @@ jobs:
           python-version: '3.13'
 
       - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          pip install ruff
+        run: pip install -r requirements-dev.txt
 
       - name: Lint with ruff
         run: ruff check .
@@ -39,6 +37,11 @@ jobs:
           POSTGRES_PASSWORD: postgres
         ports:
           - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
 
     env:
       DB_NAME: kellylab
@@ -46,7 +49,8 @@ jobs:
       DB_PASSWORD: postgres
       DB_HOST: localhost
       DB_PORT: 5432
-      SECRET_KEY: test-secret-key
+      SECRET_KEY: ci-test-secret-key-at-least-32-characters
+      CELERY_TASK_ALWAYS_EAGER: "true"
 
     steps:
       - uses: actions/checkout@v4
@@ -58,6 +62,9 @@ jobs:
 
       - name: Install dependencies
         run: pip install -r requirements.txt
+
+      - name: Check migration consistency
+        run: python manage.py makemigrations --check --dry-run
 
       - name: Run migrations
         run: python manage.py migrate

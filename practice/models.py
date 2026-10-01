@@ -11,14 +11,14 @@ class PracticeStatus(models.TextChoices):
     SUCCESS = 'success', 'Успішно'
 
 
+class Difficulty(models.TextChoices):
+    EASY = 'easy', 'Легка'
+    MEDIUM = 'medium', 'Середня'
+    HARD = 'hard', 'Складна'
+
+
 class QuestionPractice(models.Model):
     """Завдання від AI до питання; користувач пише код із нуля."""
-
-    DIFFICULTY_CHOICES = [
-        ('easy', 'Легка'),
-        ('medium', 'Середня'),
-        ('hard', 'Складна'),
-    ]
 
     question = models.ForeignKey(
         Question,
@@ -27,14 +27,14 @@ class QuestionPractice(models.Model):
         verbose_name='Питання',
     )
     title = models.CharField(
-        max_length=255, 
+        max_length=255,
         verbose_name='Назва завдання'
     )
     description = models.TextField(verbose_name='Умова завдання')
     difficulty = models.CharField(
         max_length=10,
-        choices=DIFFICULTY_CHOICES,
-        default='easy',
+        choices=Difficulty.choices,
+        default=Difficulty.EASY,
         verbose_name='Складність',
     )
     status = models.CharField(
@@ -44,21 +44,21 @@ class QuestionPractice(models.Model):
         verbose_name='Статус',
     )
     user_solution = models.TextField(
-        blank=True, 
+        blank=True,
         verbose_name='Код користувача'
     )
     feedback = models.TextField(
-        blank=True, 
+        blank=True,
         verbose_name='Пояснення оцінки'
     )
     created_at = models.DateTimeField(
-        auto_now_add=True, 
+        auto_now_add=True,
         verbose_name='Створено'
     )
     updated_at = models.DateTimeField(
-        auto_now=True, 
-        verbose_name='Оновлено'
-        )
+        auto_now=True,
+        verbose_name='Оновлено',
+    )
 
     class Meta:
         ordering = ['-created_at']
@@ -72,24 +72,18 @@ class QuestionPractice(models.Model):
 class CodingTask(models.Model):
     """Окрема задача з шаблоном коду, без прив'язки до питання."""
 
-    DIFFICULTY_CHOICES = [
-        ('easy', 'Easy'),
-        ('medium', 'Medium'),
-        ('hard', 'Hard'),
-    ]
-
     title = models.CharField(
-        max_length=255, 
+        max_length=255,
         verbose_name='Назва задачі'
     )
     description = models.TextField(verbose_name='Умова задачі')
     difficulty = models.CharField(
         max_length=10,
-        choices=DIFFICULTY_CHOICES,
+        choices=Difficulty.choices,
         verbose_name='Складність',
     )
     language = models.CharField(
-        max_length=50, 
+        max_length=50,
         verbose_name='Мова програмування'
     )
     skeleton = models.TextField(verbose_name='Шаблон коду')
@@ -100,11 +94,11 @@ class CodingTask(models.Model):
         help_text='Список об’єктів із input та expected_output; формат визначає перевіряльник.',
     )
     created_at = models.DateTimeField(
-        auto_now_add=True, 
+        auto_now_add=True,
         verbose_name='Створено'
     )
     updated_at = models.DateTimeField(
-        auto_now=True, 
+        auto_now=True,
         verbose_name='Оновлено'
     )
 
@@ -133,7 +127,7 @@ class CodingAttempt(models.Model):
         verbose_name='Задача',
     )
     user_solution = models.TextField(
-        blank=True, 
+        blank=True,
         verbose_name='Код користувача'
     )
     status = models.CharField(
@@ -143,15 +137,15 @@ class CodingAttempt(models.Model):
         verbose_name='Статус',
     )
     feedback = models.TextField(
-        blank=True, 
+        blank=True,
         verbose_name='Пояснення оцінки'
     )
     created_at = models.DateTimeField(
-        auto_now_add=True, 
+        auto_now_add=True,
         verbose_name='Створено'
     )
     updated_at = models.DateTimeField(
-        auto_now=True, 
+        auto_now=True,
         verbose_name='Оновлено'
     )
 

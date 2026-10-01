@@ -1,15 +1,18 @@
+from django.conf import settings
 from django.db import models
+from django.utils import timezone
 
 from users.models import CustomUser
 
 
+class SessionStatus(models.TextChoices):
+    CREATED = 'created', 'Сесія створена'
+    PROCESSING = 'processing', 'Обробка'
+    READY = 'ready', 'Готово'
+    FAILED = 'failed', 'Помилка'
+
+
 class Session(models.Model):
-    STATUS_CHOICES = [
-        ('created', 'Сесія створена'),
-        ('processing', 'Обробка'),
-        ('ready', 'Готово'),
-        ('failed', 'Помилка'),
-    ]
     user = models.ForeignKey(
         CustomUser,
         on_delete=models.CASCADE,
@@ -22,8 +25,8 @@ class Session(models.Model):
         verbose_name='Назва сесії')
     status = models.CharField(
         max_length=20,
-        default='created',
-        choices=STATUS_CHOICES,
+        default=SessionStatus.CREATED,
+        choices=SessionStatus.choices,
         verbose_name='Статус'
     )
     celery_task_id = models.CharField(
@@ -31,6 +34,7 @@ class Session(models.Model):
         blank=True, 
         null=True, 
         verbose_name='ID задачі')
+    error_message = models.TextField(blank=True, verbose_name='Пояснення помилки')
     created_at = models.DateTimeField(
         auto_now_add=True, 
         verbose_name='Створено')
@@ -46,3 +50,11 @@ class Session(models.Model):
 
     def __str__(self):
         return f'{self.user} - {self.name}'
+
+    @property
+    def is_busy(self):
+        """A run is active while it keeps saving answers; a silent one is considered dead."""
+        return (
+            self.status == SessionStatus.PROCESSING
+            and self.updated_at > timezone.now() - settings.GENERATION_STALE_AFTER
+        )
