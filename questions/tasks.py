@@ -31,14 +31,18 @@ def generate_with_retries(generate, question):
 # Stay well below the Redis visibility timeout (1 h): with acks_late a longer
 # task would be delivered to a second worker.
 @shared_task(soft_time_limit=30 * 60, time_limit=31 * 60)
-def generate_session_answers(session_id, run_id):
+def generate_session_answers(session_id, run_id, mode='missing'):
     active_run = Session.objects.filter(pk=session_id, status=SessionStatus.PROCESSING, celery_task_id=run_id)
     session = active_run.select_related('user').first()
     if session is None:
         return
+    questions = session.questions.order_by('order', 'id')
+    if mode == 'missing':
+        # Edited questions have their AI answer cleared, so only they are sent to the AI.
+        questions = questions.filter(ai_answer__isnull=True)
     try:
         with answer_generator(session.user.target_position, session.user.experience_level) as generate:
-            for question in session.questions.order_by('order', 'id'):
+            for question in questions:
                 # Keep network calls outside a database transaction.
                 answer = generate_with_retries(generate, question.text)
                 with transaction.atomic():

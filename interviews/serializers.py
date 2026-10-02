@@ -10,6 +10,11 @@ class SessionSerializer(serializers.ModelSerializer):
         read_only_fields = ('id', 'status', 'error_message', 'created_at', 'updated_at')
 
 
+class GenerateSerializer(serializers.Serializer):
+    # 'missing' answers only questions without an AI answer; 'all' regenerates every one.
+    mode = serializers.ChoiceField(choices=['missing', 'all'], default='missing')
+
+
 class ImportSerializer(serializers.Serializer):
     text = serializers.CharField(required=False, max_length=100_000)
     file = serializers.FileField(required=False, write_only=True)
