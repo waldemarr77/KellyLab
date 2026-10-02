@@ -3,7 +3,7 @@ from uuid import uuid4
 from django.db import transaction
 from django.http import HttpResponse
 from drf_yasg import openapi
-from drf_yasg.utils import no_body, swagger_auto_schema
+from drf_yasg.utils import swagger_auto_schema
 from kombu.exceptions import OperationalError
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -16,7 +16,7 @@ from questions.serializers import QuestionSerializer
 from questions.tasks import generate_session_answers
 
 from .models import Session, SessionStatus
-from .serializers import ImportSerializer, SessionSerializer
+from .serializers import GenerateSerializer, ImportSerializer, SessionSerializer
 
 
 class SessionViewSet(viewsets.ModelViewSet):
@@ -66,10 +66,13 @@ class SessionViewSet(viewsets.ModelViewSet):
         page = self.paginate_queryset(queryset)
         return self.get_paginated_response(QuestionSerializer(page, many=True).data)
 
-    @swagger_auto_schema(method='post', request_body=no_body, responses={202: SessionSerializer})
+    @swagger_auto_schema(method='post', request_body=GenerateSerializer, responses={202: SessionSerializer})
     @action(detail=True, methods=['post'])
     def generate(self, request, pk=None):
         session = self.get_object()
+        serializer = GenerateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        mode = serializer.validated_data['mode']
         run_id = uuid4().hex
         with transaction.atomic():
             session = self.get_queryset().select_for_update().get(pk=session.pk)
@@ -77,13 +80,15 @@ class SessionViewSet(viewsets.ModelViewSet):
                 raise Conflict()
             if not session.questions.exists():
                 raise ValidationError('Спочатку імпортуй питання.')
+            if mode == 'missing' and not session.questions.filter(ai_answer__isnull=True).exists():
+                raise ValidationError('Усі відповіді вже згенеровані. Для повторної генерації передай mode=all.')
             session.status = SessionStatus.PROCESSING
             session.celery_task_id = run_id
             session.error_message = ''
             session.save(update_fields=['status', 'celery_task_id', 'error_message', 'updated_at'])
         # Commit before publishing: even a fast worker must see the new state.
         try:
-            generate_session_answers.apply_async(args=[session.pk, run_id], task_id=run_id)
+            generate_session_answers.apply_async(args=[session.pk, run_id, mode], task_id=run_id)
         except (OperationalError, ConnectionError):
             self.get_queryset().filter(
                 pk=session.pk, celery_task_id=run_id, status=SessionStatus.PROCESSING,

@@ -206,9 +206,41 @@ class InterviewFlowTests(APITestCase):
         question.user_answer = 'My own answer'
         question.save()
         self.client.post(self.url + 'generate/')
-        self.client.post(self.url + 'generate/')
+        self.client.post(self.url + 'generate/', {'mode': 'all'}, format='json')
         question.refresh_from_db()
         self.assertEqual(question.user_answer, 'My own answer')
+
+    def test_generation_answers_only_edited_question_by_default(self):
+        self.import_text('Q1\nQ2\nQ3')
+        self.client.post(self.url + 'generate/')
+        provider = self.ai_client.models.generate_content
+        provider.reset_mock()
+        provider.return_value.text = 'New answer'
+        second = self.session.questions.get(order=2)
+        self.client.patch(f'/api/questions/{second.pk}/', {'text': 'Нове питання?'})
+        self.assertEqual(self.client.post(self.url + 'generate/').data['status'], 'ready')
+        self.assertEqual(provider.call_count, 1)
+        self.assertEqual(
+            list(self.session.questions.values_list('ai_answer', flat=True)),
+            ['Test provider answer', 'New answer', 'Test provider answer'],
+        )
+
+    def test_mode_all_regenerates_every_answer(self):
+        self.import_text('Q1\nQ2\nQ3')
+        self.client.post(self.url + 'generate/')
+        provider = self.ai_client.models.generate_content
+        provider.reset_mock()
+        response = self.client.post(self.url + 'generate/', {'mode': 'all'}, format='json')
+        self.assertEqual(response.data['status'], 'ready')
+        self.assertEqual(provider.call_count, 3)
+
+    def test_nothing_to_generate_is_rejected(self):
+        self.import_text()
+        self.client.post(self.url + 'generate/')
+        self.assertEqual(self.client.post(self.url + 'generate/').status_code, 400)
+        self.assertEqual(self.client.post(self.url + 'generate/', {'mode': 'bad'}, format='json').status_code, 400)
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.status, 'ready')
 
     def test_editing_question_invalidates_ai_answer(self):
         self.import_text()
