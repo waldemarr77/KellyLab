@@ -31,6 +31,12 @@ class SessionViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
 
+    def perform_update(self, serializer):
+        session = serializer.instance
+        session.name = serializer.validated_data.get('name', session.name)
+        session.save(update_fields=['name'])
+        session.refresh_from_db()
+
     def destroy(self, request, *args, **kwargs):
         with transaction.atomic():
             session = self.get_queryset().select_for_update().get(pk=self.get_object().pk)
