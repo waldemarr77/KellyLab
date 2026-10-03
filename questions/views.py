@@ -30,7 +30,8 @@ class QuestionViewSet(mixins.RetrieveModelMixin, mixins.UpdateModelMixin, viewse
             if serializer.validated_data.get('text', question.text) != question.text:
                 serializer.save(ai_answer=None)
                 session.status = SessionStatus.CREATED
-                session.save(update_fields=['status', 'updated_at'])
+                session.error_message = ''
+                session.save(update_fields=['status', 'error_message', 'updated_at'])
             else:
                 serializer.save()
         return Response(serializer.data)
