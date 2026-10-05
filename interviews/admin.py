@@ -1,5 +1,6 @@
-
 from django.contrib import admin
+
+from questions.admin import QuestionInline
 
 from .models import Session
 
@@ -30,6 +31,7 @@ class SessionAdmin(admin.ModelAdmin):
     ]
     ordering = ['-created_at', '-pk']
     date_hierarchy = 'created_at'
+    inlines = [QuestionInline]
 
     fieldsets = (
         ('Основне', {
