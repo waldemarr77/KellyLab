@@ -1,9 +1,11 @@
 from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
+import httpx
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import override_settings
 from django.utils import timezone
+from google.genai import errors as genai_errors
 from rest_framework.test import APITestCase
 
 from questions.models import Question
@@ -144,7 +146,8 @@ class InterviewFlowTests(APITestCase):
 
     def test_provider_failure_keeps_finished_answers(self):
         provider = self.ai_client.models.generate_content
-        provider.side_effect = [MagicMock(text='first'), *[RuntimeError('secret-key')] * 3]
+        server_error = genai_errors.ServerError(503, {'error': {'message': 'secret-key'}})
+        provider.side_effect = [MagicMock(text='first'), *[server_error] * 3]
         self.import_text()
         self.client.post(self.url + 'generate/')
         self.session.refresh_from_db()
@@ -159,11 +162,19 @@ class InterviewFlowTests(APITestCase):
 
     def test_transient_provider_error_is_retried(self):
         provider = self.ai_client.models.generate_content
-        provider.side_effect = [RuntimeError('timeout'), MagicMock(text='A1'), MagicMock(text='A2')]
+        provider.side_effect = [httpx.ReadTimeout('timeout'), MagicMock(text='A1'), MagicMock(text='A2')]
         self.import_text()
         self.assertEqual(self.client.post(self.url + 'generate/').data['status'], 'ready')
         self.assertEqual(provider.call_count, 3)
         self.assertEqual(list(self.session.questions.values_list('ai_answer', flat=True)), ['A1', 'A2'])
+
+    def test_permanent_provider_error_fails_without_retry(self):
+        provider = self.ai_client.models.generate_content
+        provider.side_effect = genai_errors.ClientError(401, {'error': {'message': 'API key not valid'}})
+        self.import_text()
+        self.assertEqual(self.client.post(self.url + 'generate/').data['status'], 'failed')
+        self.assertEqual(provider.call_count, 1)
+        self.assertFalse(self.session.questions.exclude(ai_answer=None).exists())
 
     def test_stuck_processing_session_can_be_restarted_and_deleted(self):
         self.import_text()
