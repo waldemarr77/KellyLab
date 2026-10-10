@@ -40,6 +40,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'rest_framework',
     'rest_framework_simplejwt',
+    'rest_framework_simplejwt.token_blacklist',
     'drf_yasg',
 
     'exports.apps.ExportsConfig',
@@ -73,6 +74,15 @@ REST_FRAMEWORK = {
     ),
     # Scoped throttles are enabled per view with throttle_scope.
     'DEFAULT_THROTTLE_RATES': {'auth': os.getenv('AUTH_THROTTLE_RATE', '10/minute')},
+}
+
+# Each refresh returns a new refresh token and blacklists the old one, so a stolen
+# token stops working once either party uses it. Logout blacklists the current one.
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=15),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': True,
 }
 
 ROOT_URLCONF = 'config.urls'

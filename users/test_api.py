@@ -30,6 +30,31 @@ class AuthenticationTests(APITestCase):
         self.assertEqual(user.experience_level, 'junior')
         self.assertFalse(user.is_staff)
 
+    def login(self):
+        self.client.post('/api/auth/register/', self.credentials)
+        return self.client.post('/api/auth/token/', self.credentials).data['refresh']
+
+    def test_logout_revokes_refresh_token(self):
+        refresh = self.login()
+        logout = self.client.post('/api/auth/logout/', {'refresh': refresh})
+        self.assertEqual(logout.status_code, 200)
+        refreshed = self.client.post('/api/auth/token/refresh/', {'refresh': refresh})
+        self.assertEqual(refreshed.status_code, 401)
+
+    def test_rotation_revokes_previous_refresh_token(self):
+        old = self.login()
+        rotated = self.client.post('/api/auth/token/refresh/', {'refresh': old})
+        self.assertEqual(rotated.status_code, 200)
+        self.assertNotEqual(rotated.data['refresh'], old)
+        reused = self.client.post('/api/auth/token/refresh/', {'refresh': old})
+        self.assertEqual(reused.status_code, 401)
+        fresh = self.client.post('/api/auth/token/refresh/', {'refresh': rotated.data['refresh']})
+        self.assertEqual(fresh.status_code, 200)
+
+    def test_logout_rejects_invalid_token(self):
+        result = self.client.post('/api/auth/logout/', {'refresh': 'not-a-token'})
+        self.assertEqual(result.status_code, 401)
+
     def test_duplicate_email_case_and_weak_password(self):
         self.client.post('/api/auth/register/', self.credentials)
         duplicate = self.client.post('/api/auth/register/', {**self.credentials, 'email': 'CANDIDATE@example.com'})

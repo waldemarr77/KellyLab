@@ -1,11 +1,12 @@
 import logging
 import time
 
+import httpx
 from celery import shared_task
-from celery.exceptions import SoftTimeLimitExceeded
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
+from google.genai import errors as genai_errors
 
 from interviews.models import Session, SessionStatus
 
@@ -14,17 +15,23 @@ from .models import Question
 
 logger = logging.getLogger(__name__)
 
+TRANSIENT_STATUS_CODES = {408, 429}
+
+def is_transient(exc):
+    if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
+        return True
+    if isinstance(exc, genai_errors.APIError):
+        return exc.code in TRANSIENT_STATUS_CODES or exc.code >= 500
+    return False
 
 def generate_with_retries(generate, question):
     for attempt in range(1, settings.AI_MAX_ATTEMPTS + 1):
         try:
             return generate(question)
-        except SoftTimeLimitExceeded:
-            raise
-        except Exception:
-            if attempt == settings.AI_MAX_ATTEMPTS:
+        except Exception as exc:
+            if not is_transient(exc) or attempt == settings.AI_MAX_ATTEMPTS:
                 raise
-            logger.info('AI call failed, retrying (attempt %s)', attempt)
+            logger.info('Transient AI error, retrying (attempt %s)', attempt)
             time.sleep(settings.AI_RETRY_DELAY_SECONDS * 2 ** (attempt - 1))
 
 
