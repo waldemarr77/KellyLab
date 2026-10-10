@@ -2,7 +2,7 @@ from django.contrib import admin
 
 from questions.admin import QuestionInline
 
-from .models import Session
+from .models import AIUsage, Session
 
 
 @admin.register(Session)
@@ -45,3 +45,11 @@ class SessionAdmin(admin.ModelAdmin):
             'fields': ('created_at', 'updated_at'),
         }),
     )
+
+
+@admin.register(AIUsage)
+class AIUsageAdmin(admin.ModelAdmin):
+    list_display = ['user', 'date', 'questions']
+    search_fields = ['user__email']
+    list_select_related = ['user']
+    date_hierarchy = 'date'

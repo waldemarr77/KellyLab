@@ -1,27 +1,47 @@
 from uuid import uuid4
 
+from django.conf import settings
 from django.db import transaction
+from django.db.models import F
 from django.http import HttpResponse
+from django.utils import timezone
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
 from kombu.exceptions import OperationalError
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import Throttled, ValidationError
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 
 from config.exceptions import Conflict
 from questions.models import Question
 from questions.serializers import QuestionSerializer
 from questions.tasks import generate_session_answers
 
-from .models import Session, SessionStatus
+from .models import AIUsage, Session, SessionStatus
 from .serializers import GenerateSerializer, ImportSerializer, SessionSerializer
+
+
+def charge_daily_quota(user, question_count):
+    """Count questions sent to Gemini today; reject the run if it exceeds the daily limit."""
+    usage, _ = AIUsage.objects.get_or_create(user=user, date=timezone.localdate())
+    # The row lock stops parallel runs of different sessions from both passing the check.
+    usage = AIUsage.objects.select_for_update().get(pk=usage.pk)
+    limit = settings.AI_DAILY_QUESTION_LIMIT
+    if usage.questions + question_count > limit:
+        raise Throttled(detail=(
+            f'Денний ліміт генерації вичерпано: використано {usage.questions} з {limit} питань, '
+            f'а запуск потребує {question_count}. Спробуй завтра.'
+        ))
+    usage.questions = F('questions') + question_count
+    usage.save(update_fields=['questions'])
 
 
 class SessionViewSet(viewsets.ModelViewSet):
     serializer_class = SessionSerializer
     http_method_names = ['get', 'post', 'patch', 'delete', 'head', 'options']
+    throttle_scope = 'generate'
 
     def get_queryset(self):
         if getattr(self, 'swagger_fake_view', False):
@@ -73,7 +93,7 @@ class SessionViewSet(viewsets.ModelViewSet):
         return self.get_paginated_response(QuestionSerializer(page, many=True).data)
 
     @swagger_auto_schema(method='post', request_body=GenerateSerializer, responses={202: SessionSerializer})
-    @action(detail=True, methods=['post'])
+    @action(detail=True, methods=['post'], throttle_classes=[ScopedRateThrottle])
     def generate(self, request, pk=None):
         session = self.get_object()
         serializer = GenerateSerializer(data=request.data)
@@ -84,10 +104,15 @@ class SessionViewSet(viewsets.ModelViewSet):
             session = self.get_queryset().select_for_update().get(pk=session.pk)
             if session.is_busy:
                 raise Conflict()
-            if not session.questions.exists():
+            questions = session.questions.all()
+            if not questions.exists():
                 raise ValidationError('Спочатку імпортуй питання.')
-            if mode == 'missing' and not session.questions.filter(ai_answer__isnull=True).exists():
-                raise ValidationError('Усі відповіді вже згенеровані. Для повторної генерації передай mode=all.')
+            if mode == 'missing':
+                questions = questions.filter(ai_answer__isnull=True)
+                if not questions.exists():
+                    raise ValidationError('Усі відповіді вже згенеровані. Для повторної генерації передай mode=all.')
+            # Raises before the status change, so a rejected run leaves the session untouched.
+            charge_daily_quota(request.user, questions.count())
             session.status = SessionStatus.PROCESSING
             session.celery_task_id = run_id
             session.error_message = ''

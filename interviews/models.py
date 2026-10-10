@@ -58,3 +58,21 @@ class Session(models.Model):
             self.status == SessionStatus.PROCESSING
             and self.updated_at > timezone.now() - settings.GENERATION_STALE_AFTER
         )
+
+
+class AIUsage(models.Model):
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        verbose_name='Користувач',
+        related_name='ai_usage',
+    )
+
+    date = models.DateField(verbose_name='Дата')
+    questions = models.PositiveIntegerField(default=0, verbose_name='Питання')
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['user', 'date'], name='unique_ai_usage_per_day')]
+        ordering = ['-date']
+        verbose_name = 'Лічильник'
+        verbose_name_plural = 'Лічильники'
