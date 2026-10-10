@@ -73,7 +73,10 @@ REST_FRAMEWORK = {
         'rest_framework.authentication.SessionAuthentication',
     ),
     # Scoped throttles are enabled per view with throttle_scope.
-    'DEFAULT_THROTTLE_RATES': {'auth': os.getenv('AUTH_THROTTLE_RATE', '10/minute')},
+    'DEFAULT_THROTTLE_RATES': {
+        'auth': os.getenv('AUTH_THROTTLE_RATE', '10/minute'),
+        'generate': os.getenv('GENERATE_THROTTLE_RATE', '2/minute'),
+    },
 }
 
 # Each refresh returns a new refresh token and blacklists the old one, so a stolen
@@ -139,6 +142,8 @@ GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
 GEMINI_MODEL = os.getenv('GEMINI_MODEL', '')
 AI_MAX_ATTEMPTS = 3
 AI_RETRY_DELAY_SECONDS = 2
+# Shared free-tier key: cap how many questions one user can send to Gemini per day.
+AI_DAILY_QUESTION_LIMIT = int(os.getenv('AI_DAILY_QUESTION_LIMIT', '100'))
 # A processing session without saved progress for this long is treated as stuck
 # and can be regenerated or deleted. Must exceed the worst case for one question.
 GENERATION_STALE_AFTER = timedelta(minutes=10)

@@ -2,6 +2,7 @@ from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
 import httpx
+from django.core.cache import cache
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import override_settings
 from django.utils import timezone
@@ -12,7 +13,7 @@ from questions.models import Question
 from questions.tasks import generate_session_answers
 from users.models import CustomUser
 
-from .models import Session
+from .models import AIUsage, Session
 
 
 @override_settings(
@@ -20,6 +21,8 @@ from .models import Session
 )
 class InterviewFlowTests(APITestCase):
     def setUp(self):
+        # Throttle counters live in the cache and would leak between tests.
+        cache.clear()
         # Mock only the external SDK; exercise our real provider and task code.
         client_patch = patch('google.genai.Client')
         self.addCleanup(client_patch.stop)
@@ -249,6 +252,7 @@ class InterviewFlowTests(APITestCase):
         self.import_text()
         self.client.post(self.url + 'generate/')
         self.assertEqual(self.client.post(self.url + 'generate/').status_code, 400)
+        cache.clear()  # Third call in a minute would hit the generate throttle.
         self.assertEqual(self.client.post(self.url + 'generate/', {'mode': 'bad'}, format='json').status_code, 400)
         self.session.refresh_from_db()
         self.assertEqual(self.session.status, 'ready')
@@ -270,6 +274,30 @@ class InterviewFlowTests(APITestCase):
         self.assertNotIn('AI', self.client.get(self.url + 'export/').content.decode())
         reset = self.client.patch(url, {'user_answer': None}, format='json')
         self.assertEqual(reset.data['answer'], 'AI')
+
+    def test_frequent_generation_is_throttled(self):
+        self.import_text()
+        statuses = [self.client.post(self.url + 'generate/', {'mode': 'all'}).status_code for _ in range(3)]
+        self.assertEqual(statuses, [202, 202, 429])
+
+    @override_settings(AI_DAILY_QUESTION_LIMIT=1)
+    def test_daily_quota_rejects_run_before_processing(self):
+        self.import_text()
+        result = self.client.post(self.url + 'generate/')
+        self.assertEqual(result.status_code, 429)
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.status, 'created')
+        self.ai_client.models.generate_content.assert_not_called()
+        self.assertFalse(AIUsage.objects.filter(questions__gt=0).exists())
+
+    @override_settings(AI_DAILY_QUESTION_LIMIT=3)
+    def test_daily_quota_counts_questions_across_sessions(self):
+        self.import_text()
+        self.assertEqual(self.client.post(self.url + 'generate/').status_code, 202)
+        second = Session.objects.create(user=self.user, name='Second')
+        self.client.post(f'/api/sessions/{second.pk}/import/', {'text': 'Питання 1\nПитання 2'}, format='json')
+        self.assertEqual(self.client.post(f'/api/sessions/{second.pk}/generate/').status_code, 429)
+        self.assertEqual(AIUsage.objects.get(user=self.user).questions, 2)
 
     def test_schema_is_available(self):
         self.client.force_authenticate(None)
