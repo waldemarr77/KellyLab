@@ -62,11 +62,14 @@ GEMINI_MODEL=model-id-available-to-your-account
 
 У захищених запитах передавай `Authorization: Bearer <access>`.
 
+Access діє 15 хвилин, refresh — 7 днів. Кожен виклик `token/refresh/` повертає новий refresh, а старий одразу відкликається, тому зберігай новий. Якщо refresh не використовувати 7 днів, потрібен повторний вхід. Після `logout/` refresh більше не працює, але вже виданий access діє до кінця своїх 15 хвилин. Прострочені записи blacklist прибирає `python manage.py flushexpiredtokens`.
+
 | Метод | Шлях | Призначення |
 | --- | --- | --- |
 | POST | `/api/auth/register/` | `email`, `password`; профіль необов'язковий |
 | POST | `/api/auth/token/` | Вхід: `email`, `password` |
-| POST | `/api/auth/token/refresh/` | Новий access через `refresh` |
+| POST | `/api/auth/token/refresh/` | Новий access і новий refresh через `refresh` |
+| POST | `/api/auth/logout/` | Вихід: `refresh` потрапляє в blacklist |
 | GET, PATCH | `/api/auth/me/` | `target_position`, `experience_level` |
 | GET, POST | `/api/sessions/` | Список / створення з `name` |
 | GET, PATCH, DELETE | `/api/sessions/{id}/` | Перегляд, назва, видалення |
