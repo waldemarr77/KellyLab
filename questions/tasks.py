@@ -24,6 +24,26 @@ def is_transient(exc):
         return exc.code in TRANSIENT_STATUS_CODES or exc.code >= 500
     return False
 
+def retry_delay(exc, attempt):
+    if isinstance(exc, genai_errors.APIError) and exc.code == 429:
+        return settings.AI_RATE_LIMIT_RETRY_DELAY_SECONDS
+    return settings.AI_RETRY_DELAY_SECONDS * 2 ** (attempt - 1)
+
+def throttled(generate):
+    """Wrap generate so consecutive calls are at least AI_MIN_INTERVAL_SECONDS apart."""
+    last_call = None
+
+    def call(question):
+        nonlocal last_call
+        if last_call is not None:
+            remaining = settings.AI_MIN_INTERVAL_SECONDS - (time.monotonic() - last_call)
+            if remaining > 0:
+                time.sleep(remaining)
+        last_call = time.monotonic()
+        return generate(question)
+
+    return call
+
 def generate_with_retries(generate, question):
     for attempt in range(1, settings.AI_MAX_ATTEMPTS + 1):
         try:
@@ -32,7 +52,7 @@ def generate_with_retries(generate, question):
             if not is_transient(exc) or attempt == settings.AI_MAX_ATTEMPTS:
                 raise
             logger.info('Transient AI error, retrying (attempt %s)', attempt)
-            time.sleep(settings.AI_RETRY_DELAY_SECONDS * 2 ** (attempt - 1))
+            time.sleep(retry_delay(exc, attempt))
 
 
 # Stay well below the Redis visibility timeout (1 h): with acks_late a longer
@@ -49,6 +69,8 @@ def generate_session_answers(session_id, run_id, mode='missing'):
         questions = questions.filter(ai_answer__isnull=True)
     try:
         with answer_generator(session.user.target_position, session.user.experience_level) as generate:
+            # Retries go through the same wrapper, so they also respect the interval.
+            generate = throttled(generate)
             for question in questions:
                 # Keep network calls outside a database transaction.
                 answer = generate_with_retries(generate, question.text)

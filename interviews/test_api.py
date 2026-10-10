@@ -18,6 +18,7 @@ from .models import AIUsage, Session
 
 @override_settings(
     CELERY_TASK_ALWAYS_EAGER=True, GEMINI_API_KEY='test-key', GEMINI_MODEL='test-model', AI_RETRY_DELAY_SECONDS=0,
+    AI_MIN_INTERVAL_SECONDS=0, AI_RATE_LIMIT_RETRY_DELAY_SECONDS=0,
 )
 class InterviewFlowTests(APITestCase):
     def setUp(self):
