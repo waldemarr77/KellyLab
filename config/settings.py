@@ -142,6 +142,10 @@ GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
 GEMINI_MODEL = os.getenv('GEMINI_MODEL', '')
 AI_MAX_ATTEMPTS = 3
 AI_RETRY_DELAY_SECONDS = 2
+# Free tier allows 15 requests per minute, so keep at least 60 / 15 = 4 s between requests.
+AI_MIN_INTERVAL_SECONDS = float(os.getenv('AI_MIN_INTERVAL_SECONDS', '4'))
+# A 429 means the per-minute window is exhausted; short retries would hit it again.
+AI_RATE_LIMIT_RETRY_DELAY_SECONDS = 30
 # Shared free-tier key: cap how many questions one user can send to Gemini per day.
 AI_DAILY_QUESTION_LIMIT = int(os.getenv('AI_DAILY_QUESTION_LIMIT', '100'))
 # A processing session without saved progress for this long is treated as stuck
