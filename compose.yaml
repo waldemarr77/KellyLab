@@ -57,7 +57,16 @@ services:
 
   worker:
     <<: *app
-    command: celery -A config worker --loglevel=info --concurrency=2
+    command: celery -A config worker -Q celery --loglevel=info --concurrency=2
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  worker-ai:
+    <<: *app
+    command: celery -A config worker -Q ai --loglevel=info --concurrency=1 --prefetch-multiplier=1 -n ai@%h
     depends_on:
       migrate:
         condition: service_completed_successfully

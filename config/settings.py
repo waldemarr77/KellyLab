@@ -138,6 +138,9 @@ CELERY_TASK_PUBLISH_RETRY = False
 # Re-deliver a task if the worker dies mid-run instead of losing it.
 CELERY_TASK_ACKS_LATE = True
 CELERY_TASK_REJECT_ON_WORKER_LOST = True
+# Gemini's rate limit is per key and the pause between requests is kept per task,
+# so generation runs in its own queue served by a single worker process.
+CELERY_TASK_ROUTES = {'questions.tasks.generate_session_answers': {'queue': 'ai'}}
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
 GEMINI_MODEL = os.getenv('GEMINI_MODEL', '')
 AI_MAX_ATTEMPTS = 3
