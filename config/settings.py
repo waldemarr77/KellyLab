@@ -152,6 +152,10 @@ AI_DAILY_QUESTION_LIMIT = int(os.getenv('AI_DAILY_QUESTION_LIMIT', '100'))
 # and can be regenerated or deleted. Must exceed the worst case for one question.
 GENERATION_STALE_AFTER = timedelta(minutes=10)
 DATA_UPLOAD_MAX_MEMORY_SIZE = 1024 * 1024
+MEDIA_ROOT = BASE_DIR / 'media'
+MEDIA_URL = 'media/'
+EXPORTER_URL = os.getenv('EXPORTER_URL', 'http://127.0.0.1:8002')
+EXPORTER_TIMEOUT_SECONDS = 60
 FILE_UPLOAD_MAX_MEMORY_SIZE = 1024 * 1024
 
 

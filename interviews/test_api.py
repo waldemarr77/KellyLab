@@ -96,7 +96,9 @@ class InterviewFlowTests(APITestCase):
     @override_settings(GEMINI_API_KEY='', GEMINI_MODEL='')
     def test_missing_gemini_configuration_fails_without_saving_answers(self):
         self.import_text()
-        response = self.client.post(self.url + 'generate/')
+        with self.assertLogs('questions.tasks', 'WARNING') as logs:
+            response = self.client.post(self.url + 'generate/')
+        self.assertIn('question None: ImproperlyConfigured', '\n'.join(logs.output))
         self.assertEqual(response.data['status'], 'failed')
         self.assertFalse(self.session.questions.exclude(ai_answer=None).exists())
         self.ai_client.models.generate_content.assert_not_called()
@@ -153,11 +155,17 @@ class InterviewFlowTests(APITestCase):
         server_error = genai_errors.ServerError(503, {'error': {'message': 'secret-key'}})
         provider.side_effect = [MagicMock(text='first'), *[server_error] * 3]
         self.import_text()
-        self.client.post(self.url + 'generate/')
+        with self.assertLogs('questions.tasks', 'INFO') as logs:
+            self.client.post(self.url + 'generate/')
+        log = '\n'.join(logs.output)
+        self.assertIn('ServerError (status 503), retrying (attempt 1 of 3)', log)
+        for private in ('secret-key', 'test-key', 'Що таке ORM?', 'Що таке транзакція?'):
+            self.assertNotIn(private, log)
         self.session.refresh_from_db()
         self.assertEqual(self.session.status, 'failed')
         self.assertNotIn('secret-key', self.session.error_message)
         first, second = self.session.questions.order_by('order')
+        self.assertIn(f'session {self.session.pk}, question {second.pk}: ServerError (status 503)', log)
         self.assertEqual(first.ai_answer, 'first')
         self.assertIsNone(second.ai_answer)
         provider.side_effect = None
@@ -176,9 +184,20 @@ class InterviewFlowTests(APITestCase):
         provider = self.ai_client.models.generate_content
         provider.side_effect = genai_errors.ClientError(401, {'error': {'message': 'API key not valid'}})
         self.import_text()
-        self.assertEqual(self.client.post(self.url + 'generate/').data['status'], 'failed')
+        with self.assertLogs('questions.tasks', 'WARNING') as logs:
+            self.assertEqual(self.client.post(self.url + 'generate/').data['status'], 'failed')
+        log = '\n'.join(logs.output)
+        self.assertIn('ClientError (status 401)', log)
+        self.assertNotIn('API key not valid', log)
         self.assertEqual(provider.call_count, 1)
         self.assertFalse(self.session.questions.exclude(ai_answer=None).exists())
+
+    def test_empty_provider_response_is_logged_by_type(self):
+        self.ai_client.models.generate_content.return_value.text = '   '
+        self.import_text()
+        with self.assertLogs('questions.tasks', 'WARNING') as logs:
+            self.assertEqual(self.client.post(self.url + 'generate/').data['status'], 'failed')
+        self.assertIn('EmptyAIResponse', '\n'.join(logs.output))
 
     def test_stuck_processing_session_can_be_restarted_and_deleted(self):
         self.import_text()
