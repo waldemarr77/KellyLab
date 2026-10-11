@@ -24,23 +24,33 @@ from questions.models import Question
 from questions.serializers import QuestionSerializer
 from questions.tasks import generate_session_answers
 
-from .models import AIUsage, Session, SessionStatus
+from .models import AIUsage, GlobalAIUsage, Session, SessionStatus
 from .serializers import GenerateSerializer, ImportSerializer, SessionSerializer
 
 
+def locked_usage(queryset, **lookup):
+    usage, _ = queryset.get_or_create(**lookup)
+    return queryset.select_for_update().get(pk=usage.pk)
+
+
 def charge_daily_quota(user, question_count):
-    """Count questions sent to Gemini today; reject the run if it exceeds the daily limit."""
-    usage, _ = AIUsage.objects.get_or_create(user=user, date=timezone.localdate())
-    # The row lock stops parallel runs of different sessions from both passing the check.
-    usage = AIUsage.objects.select_for_update().get(pk=usage.pk)
+    """Count questions sent to Gemini today; reject the run if it exceeds the user or service limit."""
+    # Every run locks the service row first, so parallel runs cannot deadlock or both pass the check.
+    service = locked_usage(
+        GlobalAIUsage.objects, date=timezone.localdate(timezone=settings.GEMINI_QUOTA_TIMEZONE),
+    )
+    usage = locked_usage(AIUsage.objects, user=user, date=timezone.localdate())
     limit = settings.AI_DAILY_QUESTION_LIMIT
     if usage.questions + question_count > limit:
         raise Throttled(detail=(
             f'Денний ліміт генерації вичерпано: використано {usage.questions} з {limit} питань, '
             f'а запуск потребує {question_count}. Спробуй завтра.'
         ))
-    usage.questions = F('questions') + question_count
-    usage.save(update_fields=['questions'])
+    if service.questions + question_count > settings.AI_GLOBAL_DAILY_QUESTION_LIMIT:
+        raise Throttled(detail='Сервіс сьогодні вичерпав ліміт генерації. Спробуй завтра.')
+    for row in (usage, service):
+        row.questions = F('questions') + question_count
+        row.save(update_fields=['questions'])
 
 
 class SessionViewSet(viewsets.ModelViewSet):
