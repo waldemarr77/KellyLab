@@ -1,0 +1,105 @@
+import logging
+import time
+
+import httpx
+from celery import shared_task
+from django.conf import settings
+from django.db import transaction
+from django.utils import timezone
+from google.genai import errors as genai_errors
+
+from interviews.models import Session, SessionStatus
+
+from .ai import answer_generator
+from .models import Question
+
+logger = logging.getLogger(__name__)
+
+TRANSIENT_STATUS_CODES = {408, 429}
+
+def is_transient(exc):
+    if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
+        return True
+    if isinstance(exc, genai_errors.APIError):
+        return exc.code in TRANSIENT_STATUS_CODES or exc.code >= 500
+    return False
+
+def retry_delay(exc, attempt):
+    if isinstance(exc, genai_errors.APIError) and exc.code == 429:
+        return settings.AI_RATE_LIMIT_RETRY_DELAY_SECONDS
+    return settings.AI_RETRY_DELAY_SECONDS * 2 ** (attempt - 1)
+
+def describe_error(exc):
+    """Name the error and its HTTP status, never its message: it can hold the key or user text."""
+    status = exc.code if isinstance(exc, genai_errors.APIError) else None
+    return f'{type(exc).__name__} (status {status})' if status else type(exc).__name__
+
+def throttled(generate):
+    """Wrap generate so consecutive calls are at least AI_MIN_INTERVAL_SECONDS apart."""
+    last_call = None
+
+    def call(question):
+        nonlocal last_call
+        if last_call is not None:
+            remaining = settings.AI_MIN_INTERVAL_SECONDS - (time.monotonic() - last_call)
+            if remaining > 0:
+                time.sleep(remaining)
+        last_call = time.monotonic()
+        return generate(question)
+
+    return call
+
+def generate_with_retries(generate, question):
+    for attempt in range(1, settings.AI_MAX_ATTEMPTS + 1):
+        try:
+            return generate(question)
+        except Exception as exc:
+            if not is_transient(exc) or attempt == settings.AI_MAX_ATTEMPTS:
+                raise
+            logger.info(
+                'Transient AI error %s, retrying (attempt %s of %s)',
+                describe_error(exc), attempt, settings.AI_MAX_ATTEMPTS,
+            )
+            time.sleep(retry_delay(exc, attempt))
+
+
+# Stay well below the Redis visibility timeout (1 h): with acks_late a longer
+# task would be delivered to a second worker.
+@shared_task(soft_time_limit=30 * 60, time_limit=31 * 60)
+def generate_session_answers(session_id, run_id, mode='missing'):
+    active_run = Session.objects.filter(pk=session_id, status=SessionStatus.PROCESSING, celery_task_id=run_id)
+    session = active_run.select_related('user').first()
+    if session is None:
+        return
+    questions = session.questions.order_by('order', 'id')
+    if mode == 'missing':
+        # Edited questions have their AI answer cleared, so only they are sent to the AI.
+        questions = questions.filter(ai_answer__isnull=True)
+    failed_question_id = None  # Stays None if the failure happens before the first question.
+    try:
+        with answer_generator(session.user.target_position, session.user.experience_level) as generate:
+            # Retries go through the same wrapper, so they also respect the interval.
+            generate = throttled(generate)
+            for question in questions:
+                failed_question_id = question.pk
+                # Keep network calls outside a database transaction.
+                answer = generate_with_retries(generate, question.text)
+                with transaction.atomic():
+                    # Locks the session row and refreshes updated_at, which serves as
+                    # the heartbeat for stale-run detection (Session.is_busy).
+                    if not active_run.update(updated_at=timezone.now()):
+                        return  # A newer run took over or the session was deleted.
+                    Question.objects.filter(pk=question.pk).update(ai_answer=answer)
+        active_run.update(status=SessionStatus.READY, error_message='', updated_at=timezone.now())
+    except Exception as exc:  # noqa: BLE001 -- task boundary must persist failed state for any provider failure
+        # Do not persist or log provider error messages: they can contain credentials or private input.
+        # Answers saved before the failure are kept.
+        logger.warning(
+            'Answer generation failed for session %s, question %s: %s',
+            session_id, failed_question_id, describe_error(exc),
+        )
+        active_run.update(
+            status=SessionStatus.FAILED,
+            error_message='Генерація не вдалася. Перевір налаштування AI та повтори.',
+            updated_at=timezone.now(),
+        )
