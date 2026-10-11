@@ -29,6 +29,11 @@ def retry_delay(exc, attempt):
         return settings.AI_RATE_LIMIT_RETRY_DELAY_SECONDS
     return settings.AI_RETRY_DELAY_SECONDS * 2 ** (attempt - 1)
 
+def describe_error(exc):
+    """Name the error and its HTTP status, never its message: it can hold the key or user text."""
+    status = exc.code if isinstance(exc, genai_errors.APIError) else None
+    return f'{type(exc).__name__} (status {status})' if status else type(exc).__name__
+
 def throttled(generate):
     """Wrap generate so consecutive calls are at least AI_MIN_INTERVAL_SECONDS apart."""
     last_call = None
@@ -51,7 +56,10 @@ def generate_with_retries(generate, question):
         except Exception as exc:
             if not is_transient(exc) or attempt == settings.AI_MAX_ATTEMPTS:
                 raise
-            logger.info('Transient AI error, retrying (attempt %s)', attempt)
+            logger.info(
+                'Transient AI error %s, retrying (attempt %s of %s)',
+                describe_error(exc), attempt, settings.AI_MAX_ATTEMPTS,
+            )
             time.sleep(retry_delay(exc, attempt))
 
 
@@ -67,11 +75,13 @@ def generate_session_answers(session_id, run_id, mode='missing'):
     if mode == 'missing':
         # Edited questions have their AI answer cleared, so only they are sent to the AI.
         questions = questions.filter(ai_answer__isnull=True)
+    failed_question_id = None  # Stays None if the failure happens before the first question.
     try:
         with answer_generator(session.user.target_position, session.user.experience_level) as generate:
             # Retries go through the same wrapper, so they also respect the interval.
             generate = throttled(generate)
             for question in questions:
+                failed_question_id = question.pk
                 # Keep network calls outside a database transaction.
                 answer = generate_with_retries(generate, question.text)
                 with transaction.atomic():
@@ -81,10 +91,13 @@ def generate_session_answers(session_id, run_id, mode='missing'):
                         return  # A newer run took over or the session was deleted.
                     Question.objects.filter(pk=question.pk).update(ai_answer=answer)
         active_run.update(status=SessionStatus.READY, error_message='', updated_at=timezone.now())
-    except Exception:  # noqa: BLE001 -- task boundary must persist failed state for any provider failure
-        # Do not persist provider errors: they can contain credentials or private input.
+    except Exception as exc:  # noqa: BLE001 -- task boundary must persist failed state for any provider failure
+        # Do not persist or log provider error messages: they can contain credentials or private input.
         # Answers saved before the failure are kept.
-        logger.warning('Answer generation failed for session %s', session_id)
+        logger.warning(
+            'Answer generation failed for session %s, question %s: %s',
+            session_id, failed_question_id, describe_error(exc),
+        )
         active_run.update(
             status=SessionStatus.FAILED,
             error_message='Генерація не вдалася. Перевір налаштування AI та повтори.',

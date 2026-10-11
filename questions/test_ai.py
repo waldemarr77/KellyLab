@@ -1,8 +1,9 @@
 from unittest.mock import patch
 
+from django.core.exceptions import ImproperlyConfigured
 from django.test import SimpleTestCase, override_settings
 
-from .ai import answer_generator
+from .ai import EmptyAIResponse, answer_generator
 
 
 def generate_one(question, position='Developer', level='junior'):
@@ -19,7 +20,7 @@ class GeminiProviderTests(SimpleTestCase):
                 override_settings(GEMINI_API_KEY=key, GEMINI_MODEL=model),
                 patch('google.genai.Client') as client,
             ):
-                with self.assertRaisesMessage(ValueError, 'GEMINI_API_KEY and GEMINI_MODEL'):
+                with self.assertRaisesMessage(ImproperlyConfigured, 'GEMINI_API_KEY and GEMINI_MODEL'):
                     generate_one('Question')
                 client.assert_not_called()
 
@@ -58,7 +59,7 @@ class GeminiProviderTests(SimpleTestCase):
         for text in [None, '', '  ']:
             with self.subTest(text=text):
                 client.models.generate_content.return_value.text = text
-                with self.assertRaisesMessage(ValueError, 'empty response'):
+                with self.assertRaisesMessage(EmptyAIResponse, 'empty response'):
                     generate_one('Question')
 
     @patch('google.genai.Client')

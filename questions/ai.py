@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 
 from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
 
 SYSTEM_INSTRUCTION = (
     'Ти викладач для підготовки до технічної співбесіди. '
@@ -11,11 +12,15 @@ SYSTEM_INSTRUCTION = (
 )
 
 
+class EmptyAIResponse(ValueError):
+    """The model answered with no text."""
+
+
 @contextmanager
 def answer_generator(position, level):
     """Yield generate(question) that reuses one Gemini client for the whole session."""
     if not settings.GEMINI_API_KEY or not settings.GEMINI_MODEL:
-        raise ValueError('GEMINI_API_KEY and GEMINI_MODEL are required')
+        raise ImproperlyConfigured('GEMINI_API_KEY and GEMINI_MODEL are required')
 
     from google import genai
     from google.genai import types
@@ -34,7 +39,7 @@ def answer_generator(position, level):
                 config=config,
             )
             if not response.text or not response.text.strip():
-                raise ValueError('The model returned an empty response')
+                raise EmptyAIResponse('The model returned an empty response')
             return response.text.strip()
 
         yield generate

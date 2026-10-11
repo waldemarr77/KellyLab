@@ -5,6 +5,7 @@ from celery.exceptions import SoftTimeLimitExceeded
 from django.test import SimpleTestCase, override_settings
 from google.genai import errors as genai_errors
 
+from .ai import EmptyAIResponse
 from .tasks import generate_with_retries, is_transient, throttled
 
 
@@ -19,7 +20,7 @@ TRANSIENT_ERRORS = [
 ]
 PERMANENT_ERRORS = [
     api_error(400), api_error(401), api_error(403), api_error(404),
-    ValueError('The model returned an empty response'), SoftTimeLimitExceeded(),
+    EmptyAIResponse('The model returned an empty response'), SoftTimeLimitExceeded(),
 ]
 
 
