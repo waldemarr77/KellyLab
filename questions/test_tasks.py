@@ -5,6 +5,8 @@ from celery.exceptions import SoftTimeLimitExceeded
 from django.test import SimpleTestCase, override_settings
 from google.genai import errors as genai_errors
 
+from config.celery import app
+
 from .ai import EmptyAIResponse
 from .tasks import generate_with_retries, is_transient, throttled
 
@@ -103,3 +105,13 @@ class ThrottledTests(SimpleTestCase):
         call('Q1')
         call('Q2')
         sleep.assert_not_called()
+
+
+class TaskRoutingTests(SimpleTestCase):
+    def test_generation_goes_to_dedicated_ai_queue(self):
+        route = app.amqp.router.route({}, 'questions.tasks.generate_session_answers')
+        self.assertEqual(route['queue'].name, 'ai')
+
+    def test_export_stays_in_default_queue(self):
+        route = app.amqp.router.route({}, 'exports.tasks.generate_export')
+        self.assertEqual(route['queue'].name, 'celery')
