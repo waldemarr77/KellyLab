@@ -1,6 +1,6 @@
 # KellyLab
 
-Backend для підготовки до технічних співбесід. Робочий сценарій: реєстрація → профіль → сесія → імпорт питань → відповіді → власні правки → TXT-експорт.
+Backend для підготовки до технічних співбесід. Робочий сценарій: реєстрація → профіль → сесія → імпорт питань → відповіді → власні правки → експорт у TXT, PDF або DOCX.
 
 ## Що працює
 
@@ -10,9 +10,10 @@ Backend для підготовки до технічних співбесід. 
 - Генерація через Celery + Redis; для локального запуску можна виконувати задачі синхронно.
 - Генерація відповідей Gemini через `google-genai`.
 - Окреме зберігання AI-відповіді та власної відповіді; повторна генерація зберігає власні правки.
-- TXT-експорт, Swagger, інтеграційні тести й CI з PostgreSQL.
+- TXT-експорт одразу у відповіді; PDF/DOCX — фоновою Celery-задачею через окремий Exporter service.
+- Swagger, інтеграційні тести й CI з PostgreSQL.
 
-Це API-MVP. React, PDF/DOCX parser/exporter колеги, AI-практика, перевірка коду, pgvector та Llama fallback ще не підключені. Наявні моделі `practice` і `exports` залишаються заготовками. TXT-експорт формується одразу без запису `Export`. LangChain/LangGraph поки не потрібні для одного виклику моделі.
+Це API-MVP. React, parser колеги, AI-практика, перевірка коду, pgvector та Llama fallback ще не підключені. Модель `practice` залишається заготовкою. Exporter service розробляється окремо (гілка `feature/fastapi-exporter`); без нього PDF/DOCX-експорт завершується `failed`. TXT-експорт формується одразу без запису `Export`. LangChain/LangGraph поки не потрібні для одного виклику моделі.
 
 ## Локальний запуск у PowerShell
 
@@ -43,7 +44,11 @@ $env:CELERY_TASK_ALWAYS_EAGER = 'true'
 docker compose --env-file .env up --build
 ```
 
-Міграції виконує окремий сервіс перед стартом web/worker. API: http://127.0.0.1:8000/api/docs/. PostgreSQL зберігається в named volume. `docker compose down` зупиняє сервіси, зберігаючи дані. Це конфігурація для локальної розробки, з Django development server.
+Міграції виконує окремий сервіс перед стартом web/worker. API: http://127.0.0.1:8000/api/docs/. PostgreSQL і файли експорту (`media/`) зберігаються в named volumes `postgres_data` і `media`; `media` спільний для `web` (віддає файл) і `worker` (записує його). `docker compose down` зупиняє сервіси, зберігаючи дані; `docker compose down -v` видаляє і їх. Це конфігурація для локальної розробки, з Django development server.
+
+Усі змінні з `.env` потрапляють у контейнери (`env_file`), тож ліміти, `CORS_ALLOWED_ORIGINS` тощо діють і в Docker. Винятки — адреси БД, Redis, кешу, Exporter і `USE_SQLITE`/`CELERY_TASK_ALWAYS_EAGER`: `compose.yaml` задає їх сам, бо значення з локального `.env` (`127.0.0.1`) у контейнері не працюють. Після зміни `.env` перезапусти сервіси: `docker compose up -d`.
+
+Exporter у compose ще не доданий: worker звертається до `http://host.docker.internal:8002`, тобто до Exporter, запущеного на твоїй машині на порту 8002. Іншу адресу задай змінною `COMPOSE_EXPORTER_URL` у `.env`.
 
 ## Справжні AI-відповіді
 
@@ -84,8 +89,13 @@ Access діє 15 хвилин, refresh — 7 днів. Кожен виклик `
 | GET | `/api/sessions/{id}/questions/` | Картки з пагінацією |
 | GET, PATCH | `/api/questions/{id}/` | `text`, `user_answer` |
 | GET | `/api/sessions/{id}/export/` | Завантаження UTF-8 TXT |
+| POST | `/api/sessions/{id}/exports/` | PDF/DOCX: `{"format":"pdf"}` або `{"format":"docx"}` |
+| GET | `/api/sessions/{id}/exports/{export_id}/` | Статус експорту і `download_url` |
+| GET | `/api/sessions/{id}/exports/{export_id}/download/` | Завантаження готового файлу |
 
 Списки мають поля `count`, `next`, `previous`, `results`; наступна сторінка — `?page=2`. Статус сесії читається через GET: `created → processing → ready / failed`. Відповідь 202 означає прийнятий запуск, а не гарантований успіх AI; перевіряй `status` і `error_message`. Під час обробки зміни карток, видалення, повторний запуск та експорт повертають 409. Невдала публікація в чергу повертає 503 і встановлює `failed`.
+
+PDF/DOCX-експорт асинхронний: `POST .../exports/` повертає 202 і запис зі статусом `pending → processing → ready / failed`; опитуй `GET .../exports/{export_id}/`, доки не з'явиться `download_url`. Worker надсилає питання й відповіді в Exporter service (`EXPORTER_URL`, типово `http://127.0.0.1:8002`, таймаут 60 с) і зберігає файл у `media/exports/`. Якщо сесія з тим самим вмістом уже експортується або експортована в цей формат, повертається 200 з наявним записом замість нового файлу. Під час генерації експорт повертає 409, сесія без питань — 400.
 
 `user_answer=null` повертає показ AI-відповіді; `user_answer=""` навмисно залишає відповідь порожньою. Зміна тексту питання очищує його AI-відповідь і повертає сесію в `created`. За замовчуванням генерація відповідає лише на питання без AI-відповіді (нові, змінені або ті, що впали з помилкою), тож зміна одного питання коштує одного виклику AI; якщо таких питань немає, повертається 400. `mode=all` оновлює всі AI-відповіді сесії. Кожна відповідь зберігається одразу, тож після помилки готові відповіді лишаються. Кожен виклик AI повторюється до 3 разів із паузою.
 
