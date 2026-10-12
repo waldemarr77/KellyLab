@@ -76,3 +76,14 @@ class AIUsage(models.Model):
         ordering = ['-date']
         verbose_name = 'Лічильник'
         verbose_name_plural = 'Лічильники'
+
+
+class GlobalAIUsage(models.Model):
+    """Questions sent to Gemini by the whole service on one Gemini quota day."""
+    date = models.DateField(unique=True, verbose_name='Дата')
+    questions = models.PositiveIntegerField(default=0, verbose_name='Питання')
+
+    class Meta:
+        ordering = ['-date']
+        verbose_name = 'Загальний лічильник'
+        verbose_name_plural = 'Загальні лічильники'

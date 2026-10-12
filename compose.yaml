@@ -1,5 +1,10 @@
 x-app: &app
   build: .
+  # Every setting from .env reaches the containers; `environment` below overrides
+  # the values that must differ inside Docker (database, Redis, Exporter hosts).
+  env_file:
+    - path: .env
+      required: false
   environment: &environment
     SECRET_KEY: ${SECRET_KEY:-local-compose-secret-at-least-32-characters}
     DEBUG: "true"
@@ -11,9 +16,12 @@ x-app: &app
     DB_USER: kellylab
     DB_PASSWORD: kellylab-local
     CELERY_BROKER_URL: redis://redis:6379/0
+    CACHE_URL: redis://redis:6379/1
     CELERY_TASK_ALWAYS_EAGER: "false"
-    GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-    GEMINI_MODEL: ${GEMINI_MODEL:-}
+    # Exporter running on the host (uvicorn on port 8002) until it gets its own service here.
+    EXPORTER_URL: ${COMPOSE_EXPORTER_URL:-http://host.docker.internal:8002}
+  extra_hosts:
+    - host.docker.internal:host-gateway
 
 services:
   db:
@@ -49,6 +57,9 @@ services:
     <<: *app
     ports:
       - "127.0.0.1:8000:8000"
+    # The worker writes export files and web serves them, so both share one volume.
+    volumes:
+      - media:/app/media
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -58,6 +69,8 @@ services:
   worker:
     <<: *app
     command: celery -A config worker -Q celery --loglevel=info --concurrency=2
+    volumes:
+      - media:/app/media
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -75,3 +88,4 @@ services:
 
 volumes:
   postgres_data:
+  media:

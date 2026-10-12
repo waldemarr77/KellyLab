@@ -1,6 +1,7 @@
 import os
 from datetime import timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
@@ -76,7 +77,11 @@ REST_FRAMEWORK = {
     'DEFAULT_THROTTLE_RATES': {
         'auth': os.getenv('AUTH_THROTTLE_RATE', '10/minute'),
         'generate': os.getenv('GENERATE_THROTTLE_RATE', '2/minute'),
+        'token': os.getenv('TOKEN_THROTTLE_RATE', '30/minute'),
     },
+    # Number of reverse proxies in front of Django. With 0 the client is REMOTE_ADDR and
+    # X-Forwarded-For is ignored; otherwise only the addresses appended by our proxies count.
+    'NUM_PROXIES': int(os.getenv('NUM_PROXIES', '0')),
 }
 
 # Each refresh returns a new refresh token and blacklists the old one, so a stolen
@@ -130,6 +135,12 @@ SWAGGER_SETTINGS = {
     'USE_SESSION_AUTH': False,
 }
 
+# Throttle counters must be shared by all web processes and survive restarts.
+# Without CACHE_URL Django falls back to a per-process in-memory cache (local development only).
+CACHE_URL = os.getenv('CACHE_URL', '')
+if CACHE_URL:
+    CACHES = {'default': {'BACKEND': 'django.core.cache.backends.redis.RedisCache', 'LOCATION': CACHE_URL}}
+
 CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://127.0.0.1:6379/0')
 CELERY_TASK_ALWAYS_EAGER = env_bool('CELERY_TASK_ALWAYS_EAGER')
 CELERY_TASK_IGNORE_RESULT = True
@@ -151,6 +162,10 @@ AI_MIN_INTERVAL_SECONDS = float(os.getenv('AI_MIN_INTERVAL_SECONDS', '4'))
 AI_RATE_LIMIT_RETRY_DELAY_SECONDS = 30
 # Shared free-tier key: cap how many questions one user can send to Gemini per day.
 AI_DAILY_QUESTION_LIMIT = int(os.getenv('AI_DAILY_QUESTION_LIMIT', '100'))
+# The whole key gets 500 requests a day; retries are not charged here, so keep a margin.
+AI_GLOBAL_DAILY_QUESTION_LIMIT = int(os.getenv('AI_GLOBAL_DAILY_QUESTION_LIMIT', '400'))
+# Gemini resets daily quotas at midnight Pacific time, not UTC.
+GEMINI_QUOTA_TIMEZONE = ZoneInfo('America/Los_Angeles')
 # A processing session without saved progress for this long is treated as stuck
 # and can be regenerated or deleted. Must exceed the worst case for one question.
 GENERATION_STALE_AFTER = timedelta(minutes=10)

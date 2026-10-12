@@ -1,4 +1,6 @@
+from django.conf import settings
 from django.core.cache import cache
+from django.test import override_settings
 from rest_framework.test import APITestCase
 
 from .models import CustomUser
@@ -72,3 +74,28 @@ class AuthenticationTests(APITestCase):
         statuses = [self.client.post('/api/auth/token/', wrong).status_code for _ in range(11)]
         self.assertEqual(statuses[:10], [401] * 10)
         self.assertEqual(statuses[10], 429)
+
+    def test_spoofed_forwarded_for_does_not_reset_throttle(self):
+        wrong = {**self.credentials, 'password': 'wrong'}
+        statuses = [
+            self.client.post('/api/auth/token/', wrong, HTTP_X_FORWARDED_FOR=f'203.0.113.{i}').status_code
+            for i in range(11)
+        ]
+        self.assertEqual(statuses[10], 429)
+
+    def test_behind_proxy_only_proxy_appended_address_counts(self):
+        wrong = {**self.credentials, 'password': 'wrong'}
+        with override_settings(REST_FRAMEWORK={**settings.REST_FRAMEWORK, 'NUM_PROXIES': 1}):
+            statuses = [
+                # The client controls the left part; our proxy appends the real address on the right.
+                self.client.post(
+                    '/api/auth/token/', wrong, HTTP_X_FORWARDED_FOR=f'198.51.100.{i}, 203.0.113.7',
+                ).status_code
+                for i in range(11)
+            ]
+        self.assertEqual(statuses[10], 429)
+
+    def test_token_refresh_is_throttled(self):
+        statuses = [self.client.post('/api/auth/token/refresh/', {'refresh': 'bad'}).status_code for _ in range(31)]
+        self.assertEqual(statuses[:30], [401] * 30)
+        self.assertEqual(statuses[30], 429)

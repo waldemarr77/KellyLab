@@ -13,7 +13,7 @@ from questions.models import Question
 from questions.tasks import generate_session_answers
 from users.models import CustomUser
 
-from .models import AIUsage, Session
+from .models import AIUsage, GlobalAIUsage, Session
 
 
 @override_settings(
@@ -318,6 +318,19 @@ class InterviewFlowTests(APITestCase):
         self.client.post(f'/api/sessions/{second.pk}/import/', {'text': 'Питання 1\nПитання 2'}, format='json')
         self.assertEqual(self.client.post(f'/api/sessions/{second.pk}/generate/').status_code, 429)
         self.assertEqual(AIUsage.objects.get(user=self.user).questions, 2)
+
+    @override_settings(AI_GLOBAL_DAILY_QUESTION_LIMIT=3)
+    def test_global_quota_rejects_every_user(self):
+        self.import_text()
+        self.assertEqual(self.client.post(self.url + 'generate/').status_code, 202)
+        session = Session.objects.create(user=self.other, name='Other')
+        self.client.force_authenticate(self.other)
+        self.client.post(f'/api/sessions/{session.pk}/import/', {'text': 'Q1\nQ2'}, format='json')
+        self.assertEqual(self.client.post(f'/api/sessions/{session.pk}/generate/').status_code, 429)
+        session.refresh_from_db()
+        self.assertEqual(session.status, 'created')
+        self.assertEqual(GlobalAIUsage.objects.get().questions, 2)
+        self.assertFalse(AIUsage.objects.filter(user=self.other, questions__gt=0).exists())
 
     def test_schema_is_available(self):
         self.client.force_authenticate(None)
