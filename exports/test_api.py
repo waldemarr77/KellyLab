@@ -1,9 +1,13 @@
 import shutil
 import tempfile
+from datetime import timedelta
 from unittest.mock import patch
 
 import httpx
+from django.conf import settings
+from django.core.cache import cache
 from django.test import override_settings
+from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from interviews.models import Session
@@ -22,6 +26,7 @@ def exporter_response(status_code=200, content=FAKE_FILE):
 @override_settings(CELERY_TASK_ALWAYS_EAGER=True, EXPORTER_URL='http://exporter')
 class ExportTests(APITestCase):
     def setUp(self):
+        cache.clear()  # Throttle counters would otherwise carry over between tests.
         # Keep generated files out of the real media folder.
         media_root = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, media_root, ignore_errors=True)
@@ -95,3 +100,38 @@ class ExportTests(APITestCase):
         Question.objects.filter(session=self.session).delete()
         self.assertEqual(self.client.post(self.url, {'format': 'pdf'}, format='json').status_code, 400)
         self.exporter.assert_not_called()
+
+    def test_stuck_export_does_not_block_new_one(self):
+        first = self.client.post(self.url, {'format': 'pdf'}, format='json')
+        old = timezone.now() - settings.EXPORT_STALE_AFTER - timedelta(minutes=1)
+        Export.objects.filter(pk=first.data['id']).update(status='processing', updated_at=old)
+        second = self.client.post(self.url, {'format': 'pdf'}, format='json')
+        self.assertEqual(second.status_code, 202)
+        self.assertNotEqual(second.data['id'], first.data['id'])
+        self.assertEqual(second.data['status'], 'ready')
+
+    def test_running_export_is_reused(self):
+        first = self.client.post(self.url, {'format': 'pdf'}, format='json')
+        Export.objects.filter(pk=first.data['id']).update(status='processing')
+        second = self.client.post(self.url, {'format': 'pdf'}, format='json')
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.data['id'], first.data['id'])
+
+    def test_unexpected_error_marks_export_failed(self):
+        self.exporter.side_effect = RuntimeError('boom')
+        created = self.client.post(self.url, {'format': 'pdf'}, format='json')
+        self.assertEqual(created.data['status'], 'failed')
+
+    def test_missing_file_gives_404_and_is_regenerated(self):
+        first = self.client.post(self.url, {'format': 'pdf'}, format='json')
+        Export.objects.get(pk=first.data['id']).file.delete(save=False)
+        self.assertEqual(self.client.get(first.data['download_url']).status_code, 404)
+        second = self.client.post(self.url, {'format': 'pdf'}, format='json')
+        self.assertEqual(second.status_code, 202)
+        self.assertEqual(self.exporter.call_count, 2)
+
+    def test_frequent_exports_are_throttled(self):
+        limit = int(settings.REST_FRAMEWORK['DEFAULT_THROTTLE_RATES']['export'].split('/')[0])
+        for _ in range(limit):
+            self.client.post(self.url, {'format': 'pdf'}, format='json')
+        self.assertEqual(self.client.post(self.url, {'format': 'pdf'}, format='json').status_code, 429)
