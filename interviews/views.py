@@ -3,7 +3,7 @@ from uuid import uuid4
 from django.conf import settings
 from django.db import transaction
 from django.db.models import F
-from django.http import FileResponse, HttpResponse
+from django.http import FileResponse, Http404, HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from drf_yasg import openapi
@@ -13,12 +13,12 @@ from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import Throttled, ValidationError
 from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
+from rest_framework.throttling import ScopedRateThrottle, UserRateThrottle
 
 from config.exceptions import Conflict
 from exports.models import Export, StatusExport
 from exports.serializers import ExportCreateSerializer, ExportSerializer
-from exports.services import build_export_payload, content_hash
+from exports.services import build_export_payload, content_hash, reusable_export
 from exports.tasks import generate_export
 from questions.models import Question
 from questions.serializers import QuestionSerializer
@@ -51,6 +51,11 @@ def charge_daily_quota(user, question_count):
     for row in (usage, service):
         row.questions = F('questions') + question_count
         row.save(update_fields=['questions'])
+
+
+class ExportThrottle(UserRateThrottle):
+    # The viewset's throttle_scope belongs to generate, so exports get their own scope.
+    scope = 'export'
 
 
 class SessionViewSet(viewsets.ModelViewSet):
@@ -161,29 +166,29 @@ class SessionViewSet(viewsets.ModelViewSet):
     @swagger_auto_schema(
         method='post', request_body=ExportCreateSerializer, responses={200: ExportSerializer, 202: ExportSerializer},
     )
-    @action(detail=True, methods=['post'], url_path='exports')
+    @action(detail=True, methods=['post'], url_path='exports', throttle_classes=[ExportThrottle])
     def create_export(self, request, pk=None):
         session = self.get_object()
-        if session.is_busy:
-            raise Conflict()
         serializer = ExportCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         export_format = serializer.validated_data['format']
-        if not session.questions.exists():
-            raise ValidationError('Спочатку імпортуй питання.')
-        payload_hash = content_hash(build_export_payload(session, export_format))
-        # The same content was already exported or is being exported: reuse it instead of a new file.
-        existing = session.exports.filter(
-            format=export_format,
-            content_hash=payload_hash,
-            status__in=[StatusExport.PENDING, StatusExport.PROCESSING, StatusExport.READY],
-        ).first()
-        if existing is not None:
-            return Response(ExportSerializer(existing, context={'request': request}).data)
         task_id = uuid4().hex
-        export = Export.objects.create(
-            session=session, format=export_format, content_hash=payload_hash, celery_task_id=task_id,
-        )
+        with transaction.atomic():
+            # A parallel request waits on this lock and then finds the export created here.
+            session = self.get_queryset().select_for_update().get(pk=session.pk)
+            if session.is_busy:
+                raise Conflict()
+            if not session.questions.exists():
+                raise ValidationError('Спочатку імпортуй питання.')
+            payload_hash = content_hash(build_export_payload(session, export_format))
+            # The same content was already exported or is being exported: reuse it instead of a new file.
+            existing = reusable_export(session, export_format, payload_hash)
+            if existing is not None:
+                return Response(ExportSerializer(existing, context={'request': request}).data)
+            export = Export.objects.create(
+                session=session, format=export_format, content_hash=payload_hash, celery_task_id=task_id,
+            )
+        # Commit before publishing: even a fast worker must see the new export.
         try:
             generate_export.apply_async(args=[export.pk], task_id=task_id)
         except (OperationalError, ConnectionError):
@@ -207,6 +212,9 @@ class SessionViewSet(viewsets.ModelViewSet):
     def export_download(self, request, pk=None, export_id=None):
         # get_object() only finds the user's own sessions, so other users get 404.
         export = get_object_or_404(self.get_object().exports, pk=export_id, status=StatusExport.READY)
+        # The file can be gone (e.g. lost volume); a new POST then regenerates it.
+        if not export.file.storage.exists(export.file.name):
+            raise Http404
         return FileResponse(
             export.file.open('rb'), as_attachment=True, filename=f'kellylab-{export.session_id}.{export.format}',
         )

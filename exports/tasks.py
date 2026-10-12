@@ -29,14 +29,14 @@ def generate_export(export_id):
             f'{settings.EXPORTER_URL}/export', json=payload, timeout=settings.EXPORTER_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
-    except httpx.HTTPError as exc:
+        export.file.save(f'kellylab-{export.session_id}.{export.format}', ContentFile(response.content), save=False)
+    except Exception as exc:  # noqa: BLE001 -- any failure (Exporter, disk, time limit) must end in failed
         logger.warning('Export %s failed: %s', export_id, type(exc).__name__)
         export.status = StatusExport.FAILED
         export.error_message = 'Не вдалося створити файл. Спробуйте ще раз пізніше.'
         export.save(update_fields=['status', 'error_message', 'updated_at'])
         return
 
-    export.file.save(f'kellylab-{export.session_id}.{export.format}', ContentFile(response.content), save=False)
     # The session may have changed since the request; store the hash of what is really in the file.
     export.content_hash = content_hash(payload)
     export.status = StatusExport.READY
