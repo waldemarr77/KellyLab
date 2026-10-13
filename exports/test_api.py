@@ -135,3 +135,19 @@ class ExportTests(APITestCase):
         for _ in range(limit):
             self.client.post(self.url, {'format': 'pdf'}, format='json')
         self.assertEqual(self.client.post(self.url, {'format': 'pdf'}, format='json').status_code, 429)
+
+    def test_deleting_session_or_account_removes_export_files(self):
+        created = self.client.post(self.url, {'format': 'pdf'}, format='json')
+        export = Export.objects.get(pk=created.data['id'])
+        storage, name = export.file.storage, export.file.name
+        self.assertTrue(storage.exists(name))
+        with self.captureOnCommitCallbacks(execute=True):
+            self.assertEqual(self.client.delete(f'/api/sessions/{self.session.pk}/').status_code, 204)
+        self.assertFalse(storage.exists(name))
+        session = Session.objects.create(user=self.user, name='Second')
+        Question.objects.create(session=session, text='Q', ai_answer='A')
+        created = self.client.post(f'/api/sessions/{session.pk}/exports/', {'format': 'docx'}, format='json')
+        name = Export.objects.get(pk=created.data['id']).file.name
+        with self.captureOnCommitCallbacks(execute=True):
+            self.user.delete()
+        self.assertFalse(storage.exists(name))

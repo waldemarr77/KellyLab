@@ -8,6 +8,7 @@ from .models import CustomUser
 class CustomUserAdmin(UserAdmin):
     list_display = [
         'email',
+        'email_verified',
         'username',
         'target_position',
         'experience_level',
@@ -19,6 +20,7 @@ class CustomUserAdmin(UserAdmin):
     ]
 
     list_filter = [
+        'email_verified',
         'experience_level',
         'is_active',
         'is_staff',
@@ -39,6 +41,9 @@ class CustomUserAdmin(UserAdmin):
     fieldsets = UserAdmin.fieldsets + (
         ('Підготовка до співбесіди', {
             'fields': ('target_position', 'experience_level'),
+        }),
+        ('Підтвердження', {
+            'fields': ('email_verified',),
         }),
     )
 

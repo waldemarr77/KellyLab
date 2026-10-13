@@ -1,4 +1,7 @@
+from django.conf import settings
 from rest_framework import serializers
+
+from questions.models import MAX_QUESTIONS_PER_SESSION
 
 from .models import Session
 
@@ -24,7 +27,7 @@ class ImportSerializer(serializers.Serializer):
             raise serializers.ValidationError('Передай або text, або один TXT-файл.')
         if 'file' in attrs:
             upload = attrs['file']
-            if not upload.name.lower().endswith('.txt') or upload.size > 100_000:
+            if not upload.name.lower().endswith('.txt') or upload.size > settings.FILE_UPLOAD_MAX_SIZE:
                 raise serializers.ValidationError({'file': 'Потрібен TXT до 100 KB у UTF-8.'})
             try:
                 text = upload.read().decode('utf-8-sig')
@@ -33,8 +36,17 @@ class ImportSerializer(serializers.Serializer):
         else:
             text = attrs['text']
         questions = [line.strip() for line in text.splitlines() if line.strip()]
-        if not 1 <= len(questions) <= 50:
-            raise serializers.ValidationError('Потрібно від 1 до 50 питань: одне на рядок.')
+        if not 1 <= len(questions) <= MAX_QUESTIONS_PER_SESSION:
+            raise serializers.ValidationError(
+                f'Потрібно від 1 до {MAX_QUESTIONS_PER_SESSION} питань: одне на рядок.'
+            )
         if any(len(question) > 2000 or '\x00' in question for question in questions):
             raise serializers.ValidationError('Питання: до 2000 символів, без нульових байтів.')
         return {'questions': questions}
+
+
+class ReorderSerializer(serializers.Serializer):
+    # Every question of the session, in the new order.
+    ids = serializers.ListField(
+        child=serializers.IntegerField(), min_length=1, max_length=MAX_QUESTIONS_PER_SESSION,
+    )
