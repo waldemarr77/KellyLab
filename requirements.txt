@@ -8,4 +8,5 @@ psycopg2-binary==2.9.12
 celery==5.6.3
 redis==8.1.0
 google-genai==2.22.0
+pydantic==2.13.5
 httpx==0.28.1

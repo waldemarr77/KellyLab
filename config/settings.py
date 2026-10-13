@@ -79,6 +79,9 @@ REST_FRAMEWORK = {
         'generate': os.getenv('GENERATE_THROTTLE_RATE', '2/minute'),
         'token': os.getenv('TOKEN_THROTTLE_RATE', '30/minute'),
         'export': os.getenv('EXPORT_THROTTLE_RATE', '10/minute'),
+        # Creating sessions and importing questions; both only grow the database.
+        'session_write': os.getenv('SESSION_WRITE_THROTTLE_RATE', '60/hour'),
+        'verification_email': os.getenv('VERIFICATION_EMAIL_THROTTLE_RATE', '3/hour'),
     },
     # Number of reverse proxies in front of Django. With 0 the client is REMOTE_ADDR and
     # X-Forwarded-For is ignored; otherwise only the addresses appended by our proxies count.
@@ -161,6 +164,11 @@ AI_RETRY_DELAY_SECONDS = 2
 AI_MIN_INTERVAL_SECONDS = float(os.getenv('AI_MIN_INTERVAL_SECONDS', '4'))
 # A 429 means the per-minute window is exhausted; short retries would hit it again.
 AI_RATE_LIMIT_RETRY_DELAY_SECONDS = 30
+# Output tokens per answer. Thinking models count their reasoning here too,
+# so a small limit cuts answers off or leaves them empty.
+AI_MAX_OUTPUT_TOKENS = int(os.getenv('AI_MAX_OUTPUT_TOKENS', '8192'))
+# Empty: the model's default thinking. 0 turns it off on models that allow it (e.g. 2.5 Flash).
+AI_THINKING_BUDGET = int(os.getenv('AI_THINKING_BUDGET')) if os.getenv('AI_THINKING_BUDGET') else None
 # Shared free-tier key: cap how many questions one user can send to Gemini per day.
 AI_DAILY_QUESTION_LIMIT = int(os.getenv('AI_DAILY_QUESTION_LIMIT', '100'))
 # The whole key gets 500 requests a day; retries are not charged here, so keep a margin.
@@ -171,6 +179,15 @@ GEMINI_QUOTA_TIMEZONE = ZoneInfo('America/Los_Angeles')
 # and can be regenerated or deleted. Must exceed the worst case for one question.
 GENERATION_STALE_AFTER = timedelta(minutes=10)
 DATA_UPLOAD_MAX_MEMORY_SIZE = 1024 * 1024
+# DATA_UPLOAD_MAX_MEMORY_SIZE does not count files, so the handler below cuts off a file at this size.
+FILE_UPLOAD_MAX_SIZE = 100_000
+FILE_UPLOAD_HANDLERS = [
+    'config.uploads.FileSizeLimitUploadHandler',
+    'django.core.files.uploadhandler.MemoryFileUploadHandler',
+    'django.core.files.uploadhandler.TemporaryFileUploadHandler',
+]
+# Every session holds up to 50 questions, so this bounds how much one account can store.
+MAX_SESSIONS_PER_USER = int(os.getenv('MAX_SESSIONS_PER_USER', '50'))
 MEDIA_ROOT = BASE_DIR / 'media'
 MEDIA_URL = 'media/'
 EXPORTER_URL = os.getenv('EXPORTER_URL', 'http://127.0.0.1:8002')
@@ -189,6 +206,13 @@ AUTH_PASSWORD_VALIDATORS = [
 
 AUTH_USER_MODEL = 'users.CustomUser'
 
+AUTHENTICATION_BACKENDS = ['users.backends.LoginLimitBackend']
+# Failed logins (API and admin) are counted per email and per IP; at the limit the next
+# attempts are refused without checking the password until the window ends.
+LOGIN_FAILURE_LIMIT_PER_EMAIL = int(os.getenv('LOGIN_FAILURE_LIMIT_PER_EMAIL', '5'))
+LOGIN_FAILURE_LIMIT_PER_IP = int(os.getenv('LOGIN_FAILURE_LIMIT_PER_IP', '20'))
+LOGIN_FAILURE_WINDOW = timedelta(minutes=15)
+
 
 LANGUAGE_CODE = 'uk'
 TIME_ZONE = 'UTC'
@@ -197,8 +221,27 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 
-MAILERS = {
-    'default': {
-        'BACKEND': 'django.core.mail.backends.console.EmailBackend',
-    },
-}
+# Without EMAIL_HOST letters are printed to the console (local development).
+# Lowercase name: Django forbids the old EMAIL_* settings next to MAILERS.
+email_host = os.getenv('EMAIL_HOST', '')
+if email_host:
+    MAILERS = {'default': {
+        'BACKEND': 'django.core.mail.backends.smtp.EmailBackend',
+        'OPTIONS': {
+            'host': email_host,
+            'port': int(os.getenv('EMAIL_PORT', '587')),
+            'username': os.getenv('EMAIL_HOST_USER', ''),
+            'password': os.getenv('EMAIL_HOST_PASSWORD', ''),
+            'use_tls': env_bool('EMAIL_USE_TLS', 'true'),
+            'timeout': 10,
+        },
+    }}
+else:
+    MAILERS = {'default': {'BACKEND': 'django.core.mail.backends.console.EmailBackend'}}
+DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'KellyLab <noreply@localhost>')
+# Frontend page that reads uid and token from the link and POSTs them to /api/auth/verify-email/.
+EMAIL_VERIFICATION_URL = os.getenv(
+    'EMAIL_VERIFICATION_URL', 'http://localhost:5173/verify-email?uid={uid}&token={token}',
+)
+# Frontend page that asks for a new password and POSTs it with uid and token to /api/auth/password/reset/confirm/.
+PASSWORD_RESET_URL = os.getenv('PASSWORD_RESET_URL', 'http://localhost:5173/reset-password?uid={uid}&token={token}')

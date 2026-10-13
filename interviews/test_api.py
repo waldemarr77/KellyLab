@@ -1,3 +1,4 @@
+import json
 from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
@@ -7,13 +8,29 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import override_settings
 from django.utils import timezone
 from google.genai import errors as genai_errors
+from google.genai import types as genai_types
 from rest_framework.test import APITestCase
 
+from questions.ai import render_answer
 from questions.models import Question
 from questions.tasks import generate_session_answers
 from users.models import CustomUser
 
 from .models import AIUsage, GlobalAIUsage, Session
+
+
+def parts(answer):
+    return {'explanation': f'Пояснення до {answer}', 'example': '', 'interview_answer': answer, 'common_mistake': ''}
+
+
+def rendered(answer):
+    """The ai_answer text saved for a model reply built by ai_response(answer)."""
+    return render_answer(parts(answer))
+
+
+def ai_response(answer, finish_reason=genai_types.FinishReason.STOP):
+    text = None if answer is None else json.dumps(parts(answer), ensure_ascii=False)
+    return MagicMock(text=text, candidates=[MagicMock(finish_reason=finish_reason)])
 
 
 @override_settings(
@@ -28,11 +45,13 @@ class InterviewFlowTests(APITestCase):
         client_patch = patch('google.genai.Client')
         self.addCleanup(client_patch.stop)
         self.ai_client = client_patch.start().return_value.__enter__.return_value
-        self.ai_client.models.generate_content.return_value.text = 'Test provider answer'
+        self.ai_client.models.generate_content.return_value = ai_response('Test provider answer')
         self.user = CustomUser.objects.create_user(
-            username='owner', email='owner@example.com', password='Strong-password-762!',
+            username='owner', email='owner@example.com', password='Strong-password-762!', email_verified=True,
         )
-        self.other = CustomUser.objects.create_user(username='other', email='other@example.com')
+        self.other = CustomUser.objects.create_user(
+            username='other', email='other@example.com', email_verified=True,
+        )
         self.client.force_authenticate(self.user)
         self.session = Session.objects.create(user=self.user, name='Python Junior')
         self.url = f'/api/sessions/{self.session.pk}/'
@@ -51,7 +70,8 @@ class InterviewFlowTests(APITestCase):
         self.assertEqual(generated.data['status'], 'ready')
         cards = self.client.get(self.url + 'questions/').data['results']
         self.assertEqual(len(cards), 2)
-        self.assertEqual(cards[0]['ai_answer'], 'Test provider answer')
+        self.assertEqual(cards[0]['ai_answer'], rendered('Test provider answer'))
+        self.assertEqual(cards[0]['ai_parts'], parts('Test provider answer'))
         self.assertEqual(self.ai_client.models.generate_content.call_count, 2)
         edited = self.client.patch(
             f'/api/questions/{cards[0]["id"]}/', {'user_answer': 'Моя відповідь'}, format='json',
@@ -114,6 +134,16 @@ class InterviewFlowTests(APITestCase):
                 self.assertEqual(self.import_text(text).status_code, 400)
         self.assertEqual(self.session.questions.count(), 0)
 
+    def test_oversized_file_is_cut_off_while_uploading(self):
+        upload = SimpleUploadedFile('huge.txt', b'q\n' * 2_500_000)
+        with patch('django.core.files.uploadhandler.TemporaryFileUploadHandler.receive_data_chunk') as to_disk:
+            response = self.client.post(self.url + 'import/', {'file': upload}, format='multipart')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('100 KB', response.data['detail'])
+        # At most the allowed 100 KB reached the temporary file, not the whole 5 MB body.
+        self.assertLessEqual(sum(len(call.args[0]) for call in to_disk.call_args_list), 100_000)
+        self.assertEqual(self.session.questions.count(), 0)
+
     def test_utf8_bom_file_import(self):
         upload = SimpleUploadedFile('questions.txt', '\ufeffЩо таке Python?\n\nЩо таке GIL?'.encode())
         response = self.client.post(self.url + 'import/', {'file': upload}, format='multipart')
@@ -149,11 +179,14 @@ class InterviewFlowTests(APITestCase):
         self.session.refresh_from_db()
         self.assertEqual(self.session.status, 'failed')
         self.assertNotIn('private', self.session.error_message)
+        # Nothing reached Gemini, so the quota is not spent.
+        self.assertEqual(AIUsage.objects.get(user=self.user).questions, 0)
+        self.assertEqual(GlobalAIUsage.objects.get().questions, 0)
 
     def test_provider_failure_keeps_finished_answers(self):
         provider = self.ai_client.models.generate_content
         server_error = genai_errors.ServerError(503, {'error': {'message': 'secret-key'}})
-        provider.side_effect = [MagicMock(text='first'), *[server_error] * 3]
+        provider.side_effect = [ai_response('first'), *[server_error] * 3]
         self.import_text()
         with self.assertLogs('questions.tasks', 'INFO') as logs:
             self.client.post(self.url + 'generate/')
@@ -166,19 +199,19 @@ class InterviewFlowTests(APITestCase):
         self.assertNotIn('secret-key', self.session.error_message)
         first, second = self.session.questions.order_by('order')
         self.assertIn(f'session {self.session.pk}, question {second.pk}: ServerError (status 503)', log)
-        self.assertEqual(first.ai_answer, 'first')
+        self.assertEqual(first.ai_answer, rendered('first'))
         self.assertIsNone(second.ai_answer)
         provider.side_effect = None
-        provider.return_value.text = 'Recovered'
+        provider.return_value = ai_response('Recovered')
         self.assertEqual(self.client.post(self.url + 'generate/').data['status'], 'ready')
 
     def test_transient_provider_error_is_retried(self):
         provider = self.ai_client.models.generate_content
-        provider.side_effect = [httpx.ReadTimeout('timeout'), MagicMock(text='A1'), MagicMock(text='A2')]
+        provider.side_effect = [httpx.ReadTimeout('timeout'), ai_response('A1'), ai_response('A2')]
         self.import_text()
         self.assertEqual(self.client.post(self.url + 'generate/').data['status'], 'ready')
         self.assertEqual(provider.call_count, 3)
-        self.assertEqual(list(self.session.questions.values_list('ai_answer', flat=True)), ['A1', 'A2'])
+        self.assertEqual(list(self.session.questions.values_list('ai_answer', flat=True)), [rendered('A1'), rendered('A2')])
 
     def test_permanent_provider_error_fails_without_retry(self):
         provider = self.ai_client.models.generate_content
@@ -196,8 +229,68 @@ class InterviewFlowTests(APITestCase):
         self.ai_client.models.generate_content.return_value.text = '   '
         self.import_text()
         with self.assertLogs('questions.tasks', 'WARNING') as logs:
-            self.assertEqual(self.client.post(self.url + 'generate/').data['status'], 'failed')
+            self.assertEqual(self.client.post(self.url + 'generate/').data['status'], 'ready')
         self.assertIn('EmptyAIResponse', '\n'.join(logs.output))
+
+    def test_bad_answer_for_one_question_does_not_block_the_rest(self):
+        provider = self.ai_client.models.generate_content
+        blocked = ai_response(None, genai_types.FinishReason.SAFETY)
+        provider.side_effect = [ai_response('A1'), blocked, ai_response('A3')]
+        self.import_text('Q1\nQ2\nQ3')
+        with self.assertLogs('questions.tasks', 'WARNING') as logs:
+            result = self.client.post(self.url + 'generate/')
+        self.assertIn('IncompleteAIResponse (SAFETY)', '\n'.join(logs.output))
+        self.assertEqual(result.data['status'], 'ready')
+        self.assertIn('1 з 3', result.data['error_message'])
+        cards = self.client.get(self.url + 'questions/').data['results']
+        self.assertEqual([card['ai_answer'] for card in cards], [rendered('A1'), None, rendered('A3')])
+        self.assertEqual([bool(card['ai_error']) for card in cards], [False, True, False])
+        # The next run retries only the failed question and clears its error.
+        provider.side_effect = None
+        provider.return_value = ai_response('A2')
+        self.assertEqual(self.client.post(self.url + 'generate/').data['error_message'], '')
+        second = self.session.questions.get(order=2)
+        self.assertEqual((second.ai_answer, second.ai_error), (rendered('A2'), ''))
+        self.assertEqual(AIUsage.objects.get(user=self.user).questions, 4)
+
+    def test_truncated_answer_is_not_saved(self):
+        self.ai_client.models.generate_content.return_value = ai_response(
+            'Половина відпов', genai_types.FinishReason.MAX_TOKENS,
+        )
+        self.import_text('Q1')
+        with self.assertLogs('questions.tasks', 'WARNING'):
+            self.client.post(self.url + 'generate/')
+        question = self.session.questions.get()
+        self.assertIsNone(question.ai_answer)
+        self.assertIn('обрізалась', question.ai_error)
+
+    def test_failed_regeneration_keeps_previous_answer(self):
+        self.import_text('Q1')
+        self.client.post(self.url + 'generate/')
+        self.ai_client.models.generate_content.return_value = ai_response(None, genai_types.FinishReason.SAFETY)
+        with self.assertLogs('questions.tasks', 'WARNING'):
+            self.client.post(self.url + 'generate/', {'mode': 'all'}, format='json')
+        question = self.session.questions.get()
+        self.assertEqual(question.ai_answer, rendered('Test provider answer'))
+        self.assertNotEqual(question.ai_error, '')
+
+    def test_stopped_run_refunds_questions_it_never_sent(self):
+        provider = self.ai_client.models.generate_content
+        provider.side_effect = genai_errors.ClientError(401, {'error': {'message': 'API key not valid'}})
+        self.import_text('Q1\nQ2\nQ3')
+        with self.assertLogs('questions.tasks', 'WARNING'):
+            self.client.post(self.url + 'generate/')
+        # One question reached Gemini; the other two are given back.
+        self.assertEqual(AIUsage.objects.get(user=self.user).questions, 1)
+        self.assertEqual(GlobalAIUsage.objects.get().questions, 1)
+
+    @override_settings(GEMINI_API_KEY='')
+    def test_missing_configuration_refunds_the_whole_run(self):
+        self.import_text()
+        with self.assertLogs('questions.tasks', 'WARNING'):
+            self.assertEqual(self.client.post(self.url + 'generate/').data['status'], 'failed')
+        self.assertEqual(AIUsage.objects.get(user=self.user).questions, 0)
+        self.assertEqual(GlobalAIUsage.objects.get().questions, 0)
 
     def test_stuck_processing_session_can_be_restarted_and_deleted(self):
         self.import_text()
@@ -227,7 +320,7 @@ class InterviewFlowTests(APITestCase):
 
         def take_over(**kwargs):
             Session.objects.filter(pk=self.session.pk).update(celery_task_id='new-run')
-            return MagicMock(text='stale answer')
+            return ai_response('stale answer')
 
         self.ai_client.models.generate_content.side_effect = take_over
         generate_session_answers(self.session.pk, 'old-run')
@@ -249,14 +342,14 @@ class InterviewFlowTests(APITestCase):
         self.client.post(self.url + 'generate/')
         provider = self.ai_client.models.generate_content
         provider.reset_mock()
-        provider.return_value.text = 'New answer'
+        provider.return_value = ai_response('New answer')
         second = self.session.questions.get(order=2)
         self.client.patch(f'/api/questions/{second.pk}/', {'text': 'Нове питання?'})
         self.assertEqual(self.client.post(self.url + 'generate/').data['status'], 'ready')
         self.assertEqual(provider.call_count, 1)
         self.assertEqual(
             list(self.session.questions.values_list('ai_answer', flat=True)),
-            ['Test provider answer', 'New answer', 'Test provider answer'],
+            [rendered('Test provider answer'), rendered('New answer'), rendered('Test provider answer')],
         )
 
     def test_mode_all_regenerates_every_answer(self):
@@ -283,6 +376,7 @@ class InterviewFlowTests(APITestCase):
         question = self.session.questions.first()
         result = self.client.patch(f'/api/questions/{question.pk}/', {'text': 'Нове питання?'})
         self.assertIsNone(result.data['ai_answer'])
+        self.assertIsNone(result.data['ai_parts'])
         self.session.refresh_from_db()
         self.assertEqual(self.session.status, 'created')
 
@@ -332,6 +426,140 @@ class InterviewFlowTests(APITestCase):
         self.assertEqual(GlobalAIUsage.objects.get().questions, 2)
         self.assertFalse(AIUsage.objects.filter(user=self.other, questions__gt=0).exists())
 
+    def test_unverified_account_cannot_spend_quota(self):
+        self.import_text()
+        self.user.email_verified = False
+        self.user.save(update_fields=['email_verified'])
+        self.assertEqual(self.client.post(self.url + 'generate/').status_code, 403)
+        self.assertFalse(GlobalAIUsage.objects.exists())
+        self.ai_client.models.generate_content.assert_not_called()
+
+    @override_settings(MAX_SESSIONS_PER_USER=2)
+    def test_session_count_is_limited(self):
+        statuses = [self.client.post('/api/sessions/', {'name': 'S'}, format='json').status_code for _ in range(2)]
+        self.assertEqual(statuses, [201, 400])
+        self.assertEqual(self.user.sessions.count(), 2)
+
+    @override_settings(MAX_SESSIONS_PER_USER=1000)
+    def test_session_creation_and_import_are_throttled(self):
+        for _ in range(59):
+            self.client.post('/api/sessions/', {'name': 'S'}, format='json')
+        self.assertEqual(self.import_text().status_code, 201)
+        self.assertEqual(self.import_text().status_code, 429)
+        self.assertEqual(self.client.post('/api/sessions/', {'name': 'S'}, format='json').status_code, 429)
+
+    def texts(self):
+        return list(self.session.questions.order_by('order').values_list('text', flat=True))
+
+    def orders(self):
+        return list(self.session.questions.order_by('order').values_list('order', flat=True))
+
+    def test_add_question_to_the_end(self):
+        self.import_text()
+        self.client.post(self.url + 'generate/')
+        added = self.client.post(self.url + 'questions/', {'text': '  Що таке індекс?  '}, format='json')
+        self.assertEqual(added.status_code, 201)
+        self.assertEqual((added.data['text'], added.data['order'], added.data['ai_answer']), ('Що таке індекс?', 3, None))
+        self.assertEqual(self.texts(), ['Що таке ORM?', 'Що таке транзакція?', 'Що таке індекс?'])
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.status, 'created')
+        # Default mode answers only the new question.
+        provider = self.ai_client.models.generate_content
+        provider.reset_mock()
+        self.client.post(self.url + 'generate/')
+        self.assertEqual(provider.call_count, 1)
+
+    def test_added_question_is_validated_and_limited(self):
+        for text in ['', '   ', 'x' * 2001, 'bad\x00question']:
+            with self.subTest(text=text[:20]):
+                response = self.client.post(self.url + 'questions/', {'text': text}, format='json')
+                self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.client.post(self.url + 'questions/', {}, format='json').status_code, 400)
+        self.import_text('\n'.join(f'Q{number}' for number in range(1, 51)))
+        response = self.client.post(self.url + 'questions/', {'text': 'Q51'}, format='json')
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.session.questions.count(), 50)
+
+    def test_delete_question_closes_the_gap(self):
+        self.import_text('Q1\nQ2\nQ3')
+        second = self.session.questions.get(order=2)
+        self.assertEqual(self.client.delete(f'/api/questions/{second.pk}/').status_code, 204)
+        self.assertEqual(self.texts(), ['Q1', 'Q3'])
+        self.assertEqual(self.orders(), [1, 2])
+        added = self.client.post(self.url + 'questions/', {'text': 'Q4'}, format='json')
+        self.assertEqual(added.data['order'], 3)
+
+    def test_reorder_questions(self):
+        self.import_text('Q1\nQ2\nQ3')
+        q1, q2, q3 = self.session.questions.order_by('order')
+        response = self.client.post(self.url + 'reorder/', {'ids': [q3.pk, q1.pk, q2.pk]}, format='json')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([(item['id'], item['order']) for item in response.data], [(q3.pk, 1), (q1.pk, 2), (q2.pk, 3)])
+        self.assertEqual(self.texts(), ['Q3', 'Q1', 'Q2'])
+        self.assertIn('1. Q3', self.client.get(self.url + 'export/').content.decode())
+
+    def test_reorder_needs_every_question_once(self):
+        self.import_text('Q1\nQ2\nQ3')
+        q1, q2, q3 = self.session.questions.order_by('order')
+        foreign = Question.objects.create(session=Session.objects.create(user=self.other, name='O'), text='X')
+        for ids in [[q1.pk, q2.pk], [q1.pk, q2.pk, q2.pk], [q1.pk, q2.pk, q3.pk, foreign.pk],
+                    [q1.pk, q2.pk, foreign.pk], [], 'bad']:
+            with self.subTest(ids=ids):
+                response = self.client.post(self.url + 'reorder/', {'ids': ids}, format='json')
+                self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.texts(), ['Q1', 'Q2', 'Q3'])
+
+    def test_other_users_questions_are_not_found(self):
+        session = Session.objects.create(user=self.other, name='Other')
+        question = Question.objects.create(session=session, text='Чуже')
+        url = f'/api/sessions/{session.pk}/'
+        self.assertEqual(self.client.post(url + 'questions/', {'text': 'Q'}, format='json').status_code, 404)
+        self.assertEqual(self.client.post(url + 'reorder/', {'ids': [question.pk]}, format='json').status_code, 404)
+        self.assertEqual(self.client.delete(f'/api/questions/{question.pk}/').status_code, 404)
+        self.assertEqual(session.questions.count(), 1)
+
+    def test_question_changes_are_blocked_during_generation(self):
+        self.import_text()
+        self.session.status = 'processing'
+        self.session.save()
+        first = self.session.questions.order_by('order').first()
+        self.assertEqual(self.client.post(self.url + 'questions/', {'text': 'Q'}, format='json').status_code, 409)
+        self.assertEqual(self.client.delete(f'/api/questions/{first.pk}/').status_code, 409)
+        ids = list(self.session.questions.order_by('-order').values_list('id', flat=True))
+        self.assertEqual(self.client.post(self.url + 'reorder/', {'ids': ids}, format='json').status_code, 409)
+        self.assertEqual(self.texts(), ['Що таке ORM?', 'Що таке транзакція?'])
+
+    def test_schema_lists_question_endpoints(self):
+        paths = self.client.get('/api/schema/?format=openapi').json()['paths']
+        self.assertIn('post', paths['/sessions/{id}/questions/'])
+        self.assertIn('post', paths['/sessions/{id}/reorder/'])
+        self.assertIn('delete', paths['/questions/{id}/'])
+
     def test_schema_is_available(self):
         self.client.force_authenticate(None)
         self.assertEqual(self.client.get('/api/schema/?format=openapi').status_code, 200)
+
+
+    def test_invalid_json_fails_only_its_question(self):
+        provider = self.ai_client.models.generate_content
+        broken = ai_response('unused')
+        broken.text = '{"explanation": "no other fields"}'
+        provider.side_effect = [broken, ai_response('A2')]
+        self.import_text()
+        with self.assertLogs('questions.tasks', 'WARNING') as logs:
+            self.assertEqual(self.client.post(self.url + 'generate/').data['status'], 'ready')
+        self.assertIn('InvalidAIResponse', '\n'.join(logs.output))
+        self.assertNotIn('no other fields', '\n'.join(logs.output))
+        first, second = self.session.questions.order_by('order')
+        self.assertIsNone(first.ai_parts)
+        self.assertNotEqual(first.ai_error, '')
+        self.assertEqual(second.ai_parts, parts('A2'))
+
+    def test_user_answer_and_export_use_the_joined_text(self):
+        self.import_text('Q1')
+        self.client.post(self.url + 'generate/')
+        question = self.session.questions.get()
+        self.assertEqual(self.client.get(f'/api/questions/{question.pk}/').data['answer'], rendered('Test provider answer'))
+        self.assertIn('Відповідь на співбесіді\nTest provider answer', self.client.get(self.url + 'export/').content.decode())
+        self.client.patch(f'/api/questions/{question.pk}/', {'user_answer': 'Моя'}, format='json')
+        self.assertEqual(self.client.get(f'/api/questions/{question.pk}/').data['answer'], 'Моя')

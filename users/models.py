@@ -11,6 +11,8 @@ class CustomUser(AbstractUser):
     ]
 
     email = models.EmailField(unique=True, verbose_name='Електронна пошта')
+    # Generation spends the shared Gemini key, so it is open only to confirmed addresses.
+    email_verified = models.BooleanField(default=False, verbose_name='Пошту підтверджено')
     # For example 'Python Backend Developer'.
     target_position = models.CharField(max_length=50, blank=True, default='', verbose_name='Посада')
     experience_level = models.CharField(

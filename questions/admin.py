@@ -12,6 +12,7 @@ class QuestionAdmin(admin.ModelAdmin):
         'order',
         'has_ai_answer',
         'has_user_answer',
+        'has_ai_error',
         'created_at',
     ]
     list_filter = ['session__status']
@@ -23,7 +24,7 @@ class QuestionAdmin(admin.ModelAdmin):
     # Question.__str__ shows the session, and Session.__str__ shows its user.
     list_select_related = ['session__user']
     raw_id_fields = ['session']
-    readonly_fields = ['created_at']
+    readonly_fields = ['ai_parts', 'created_at']
     ordering = ['-created_at', '-pk']
     date_hierarchy = 'created_at'
 
@@ -32,7 +33,7 @@ class QuestionAdmin(admin.ModelAdmin):
             'fields': ('session', 'order', 'text'),
         }),
         ('Відповіді', {
-            'fields': ('ai_answer', 'user_answer'),
+            'fields': ('ai_answer', 'ai_parts', 'ai_error', 'user_answer'),
         }),
         ('Дати', {
             'fields': ('created_at',),
@@ -50,6 +51,10 @@ class QuestionAdmin(admin.ModelAdmin):
     @admin.display(boolean=True, description='Є власна відповідь')
     def has_user_answer(self, obj):
         return obj.user_answer is not None
+
+    @admin.display(boolean=True, description='Помилка AI')
+    def has_ai_error(self, obj):
+        return bool(obj.ai_error)
 
 
 class QuestionInline(admin.TabularInline):
