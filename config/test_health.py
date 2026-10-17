@@ -31,3 +31,13 @@ class HealthTests(TestCase):
 
     def test_only_get_is_allowed(self):
         self.assertEqual(self.client.post(self.url).status_code, 405)
+
+
+@override_settings(SECURE_SSL_REDIRECT=True)
+class HttpsRedirectTests(TestCase):
+    def test_plain_http_is_redirected_except_health(self):
+        response = self.client.get('/api/auth/me/')
+        self.assertEqual(response.status_code, 301)
+        self.assertTrue(response['Location'].startswith('https://'))
+        self.assertEqual(self.client.get('/api/health/').status_code, 200)
+        self.assertNotEqual(self.client.get('/api/auth/me/', secure=True).status_code, 301)

@@ -72,6 +72,8 @@ jobs:
       DB_PORT: 5432
       SECRET_KEY: ci-test-secret-key-at-least-32-characters
       CELERY_TASK_ALWAYS_EAGER: "true"
+      # DEBUG is off here, so HTTPS would turn on and redirect every test request.
+      USE_HTTPS: "false"
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -89,6 +91,10 @@ jobs:
 
       - name: Run migrations
         run: python manage.py migrate
+
+      # Admin pages look up hashed file names in the manifest that collectstatic writes.
+      - name: Collect static files
+        run: python manage.py collectstatic --noinput
 
       - name: Run tests
         run: coverage run manage.py test

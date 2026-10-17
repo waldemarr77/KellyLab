@@ -65,7 +65,7 @@ docker compose run --rm -u root worker chown -R app:app /app/media
 docker compose -f compose.yaml -f compose.prod.yaml up -d --build
 ```
 
-HTTPS і reverse proxy перед `web` цей файл не налаштовує.
+Обов'язковий також `EMAIL_HOST` (SMTP для листів підтвердження й скидання пароля). Сам TLS і reverse proxy перед `web` цей файл не налаштовує, але Django готовий до них: з `DEBUG=false` за замовчуванням увімкнено `USE_HTTPS` — редирект http→https (крім `/api/health/`, який Docker перевіряє по http), cookies лише через https і HSTS на `SECURE_HSTS_SECONDS` (типово 1 година; коли https перевірено, постав `31536000`). За proxy задай `NUM_PROXIES`: тоді Django вірить заголовку `X-Forwarded-Proto`, тож proxy має сам його ставити. HSTS preload не вмикається (попередження `security.W021` вимкнено): це рішення важко скасувати. Перевірка перед деплоєм: `docker compose -f compose.yaml -f compose.prod.yaml run --rm web python manage.py check --deploy`.
 
 Усі змінні з `.env` потрапляють у контейнери (`env_file`), тож ліміти, `CORS_ALLOWED_ORIGINS` тощо діють і в Docker. Винятки — адреси БД, Redis, кешу, Exporter і `USE_SQLITE`/`CELERY_TASK_ALWAYS_EAGER`: `compose.yaml` задає їх сам, бо значення з локального `.env` (`127.0.0.1`) у контейнері не працюють. Після зміни `.env` перезапусти сервіси: `docker compose up -d`.
 

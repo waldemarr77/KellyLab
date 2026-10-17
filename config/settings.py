@@ -28,6 +28,27 @@ if not SECRET_KEY:
     SECRET_KEY = 'local-development-only-change-before-deployment'
 
 ALLOWED_HOSTS = env_list('ALLOWED_HOSTS', 'localhost,127.0.0.1')
+CSRF_TRUSTED_ORIGINS = env_list('CSRF_TRUSTED_ORIGINS')
+# Number of reverse proxies in front of Django (nginx, load balancer); 0 = direct connections.
+NUM_PROXIES = int(os.getenv('NUM_PROXIES', '0'))
+
+# HTTPS only, on by default outside development. USE_HTTPS=false is for runs without TLS (CI tests).
+# An empty value (as in .env.example) keeps the default instead of turning HTTPS off.
+USE_HTTPS = (os.getenv('USE_HTTPS') or str(not DEBUG)).lower() == 'true'
+SECURE_SSL_REDIRECT = USE_HTTPS
+# Docker's healthcheck calls plain http inside the container.
+SECURE_REDIRECT_EXEMPT = [r'^api/health/$']
+SESSION_COOKIE_SECURE = USE_HTTPS
+CSRF_COOKIE_SECURE = USE_HTTPS
+# Browsers remember it for this long, so start small and raise to a year once HTTPS works.
+SECURE_HSTS_SECONDS = int(os.getenv('SECURE_HSTS_SECONDS', '3600')) if USE_HTTPS else 0
+SECURE_HSTS_INCLUDE_SUBDOMAINS = env_bool('SECURE_HSTS_INCLUDE_SUBDOMAINS', 'true')
+if NUM_PROXIES:
+    # TLS ends at the proxy; it must set this header itself and drop the client's copy.
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+# HSTS preload puts the domain into browsers' built-in lists and is hard to undo, so it stays a
+# deliberate choice outside this config.
+SILENCED_SYSTEM_CHECKS = ['security.W021']
 
 
 INSTALLED_APPS = [
@@ -85,9 +106,9 @@ REST_FRAMEWORK = {
         'session_write': os.getenv('SESSION_WRITE_THROTTLE_RATE', '60/hour'),
         'verification_email': os.getenv('VERIFICATION_EMAIL_THROTTLE_RATE', '3/hour'),
     },
-    # Number of reverse proxies in front of Django. With 0 the client is REMOTE_ADDR and
-    # X-Forwarded-For is ignored; otherwise only the addresses appended by our proxies count.
-    'NUM_PROXIES': int(os.getenv('NUM_PROXIES', '0')),
+    # With 0 the client is REMOTE_ADDR and X-Forwarded-For is ignored;
+    # otherwise only the addresses appended by our proxies count.
+    'NUM_PROXIES': NUM_PROXIES,
 }
 
 # Each refresh returns a new refresh token and blacklists the old one, so a stolen
