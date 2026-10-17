@@ -27,7 +27,13 @@ $env:CELERY_TASK_ALWAYS_EAGER = 'true'
 .\venv\Scripts\python.exe manage.py runserver
 ```
 
-Існуючий `.env` не змінювався. Змінні поточного процесу мають пріоритет. На чистій машині потрібен Python 3.13: `python -m venv venv`, потім `.\venv\Scripts\python.exe -m pip install -r requirements-dev.txt`. Скопіюй `.env.example` у `.env`, лише якщо власного `.env` ще немає. `requirements.txt` містить залежності застосунку, `requirements-dev.txt` додає інструменти розробки (ruff).
+Існуючий `.env` не змінювався. Змінні поточного процесу мають пріоритет. На чистій машині потрібен Python 3.13: `python -m venv venv`, потім `.\venv\Scripts\python.exe -m pip install -r requirements-dev.txt`. Скопіюй `.env.example` у `.env`, лише якщо власного `.env` ще немає. Прямі залежності записані в `requirements.in` і `requirements-dev.in`; `requirements.txt` і `requirements-dev.txt` — згенеровані з них lock-файли з точними версіями всіх пакетів, тож локально, у Docker і CI ставиться одне й те саме. Lock-файли не редагуй руками: зміни `.in` і перегенеруй обидва під Linux, як у Docker і CI:
+
+```powershell
+docker run --rm -v ${PWD}:/src -w /src python:3.13-slim sh -c "pip install -q pip-tools && pip-compile -q --strip-extras --no-emit-index-url -o requirements.txt requirements.in && pip-compile -q --strip-extras --no-emit-index-url -o requirements-dev.txt requirements-dev.in"
+```
+
+Щоб оновити версії, додай `--upgrade`. CI перевіряє `requirements.txt` через `pip-audit`, а Dependabot щотижня пропонує PR з оновленнями пакетів і GitHub Actions.
 
 Відкрий http://127.0.0.1:8000/api/docs/. У Swagger після отримання JWT натисни **Authorize** і введи `Bearer <access>`. Swagger і `/api/schema/` відкриті лише при `DEBUG=true`; у production їх бачить тільки staff, який увійшов в адмінку.
 

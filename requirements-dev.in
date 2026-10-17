@@ -1,0 +1,6 @@
+# The app's own versions come from requirements.txt, so dev and Docker/CI run the same packages.
+-r requirements.in
+-c requirements.txt
+ruff==0.16.6
+pip-tools
+pip-audit
