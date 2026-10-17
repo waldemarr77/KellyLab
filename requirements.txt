@@ -67,6 +67,8 @@ google-auth==2.62.0
     # via google-genai
 google-genai==2.22.0
     # via -r requirements.in
+gunicorn==26.2.0
+    # via -r requirements.in
 h11==0.16.0
     # via httpcore
 httpcore==1.0.9
@@ -155,3 +157,5 @@ wcwidth==0.9.2
     # via prompt-toolkit
 websockets==16.1.1
     # via google-genai
+whitenoise==6.12.0
+    # via -r requirements.in

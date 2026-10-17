@@ -51,7 +51,21 @@ docker run --rm -v ${PWD}:/src -w /src python:3.13-slim sh -c "pip install -q pi
 docker compose --env-file .env up --build
 ```
 
-Міграції виконує окремий сервіс перед стартом web/worker. API: http://127.0.0.1:8000/api/docs/. `GET /api/health/` без авторизації перевіряє БД і, якщо задано `CACHE_URL`, Redis-кеш: 200, коли все працює, інакше 503 з тим, що саме впало; Docker використовує його як healthcheck для `web`. Логи Django і Celery йдуть у stdout (`docker compose logs`), рівень задає `LOG_LEVEL` (типово `INFO`). PostgreSQL і файли експорту (`media/`) зберігаються в named volumes `postgres_data` і `media`; `media` спільний для `web` (віддає файл) і `worker` (записує його). Сервіс `beat` раз на добу запускає очищення: експорти, старші 7 днів (`EXPORT_KEEP_FOR`), видаляються разом із файлами; лічильники AI-квоти, старші 30 днів (`AI_USAGE_KEEP_FOR`), теж видаляються, а `flushexpiredtokens` прибирає прострочені JWT з blacklist. `beat` має бути один. `docker compose down` зупиняє сервіси, зберігаючи дані; `docker compose down -v` видаляє і їх. Це конфігурація для локальної розробки, з Django development server.
+Міграції виконує окремий сервіс перед стартом web/worker. API: http://127.0.0.1:8000/api/docs/. `GET /api/health/` без авторизації перевіряє БД і, якщо задано `CACHE_URL`, Redis-кеш: 200, коли все працює, інакше 503 з тим, що саме впало; Docker використовує його як healthcheck для `web`; `worker` і `worker-ai` перевіряються через `celery inspect ping`. Логи Django і Celery йдуть у stdout (`docker compose logs`), рівень задає `LOG_LEVEL` (типово `INFO`). PostgreSQL і файли експорту (`media/`) зберігаються в named volumes `postgres_data` і `media`; `media` спільний для `web` (віддає файл) і `worker` (записує його). Сервіс `beat` раз на добу запускає очищення: експорти, старші 7 днів (`EXPORT_KEEP_FOR`), видаляються разом із файлами; лічильники AI-квоти, старші 30 днів (`AI_USAGE_KEEP_FOR`), теж видаляються, а `flushexpiredtokens` прибирає прострочені JWT з blacklist. `beat` має бути один. `docker compose down` зупиняє сервіси, зберігаючи дані; `docker compose down -v` видаляє і їх. Образ запускає Django через gunicorn (кількість процесів — `WEB_CONCURRENCY`) від користувача `app`, а статику адмінки віддає whitenoise: `collectstatic` виконується під час збірки.
+
+Якщо volume `media` створено ще до переходу на користувача `app`, воркер не зможе записати експорт. Один раз виправ власника (або видали volume, якщо старі експорти не потрібні):
+
+```powershell
+docker compose run --rm -u root worker chown -R app:app /app/media
+```
+
+Для production додай override `compose.prod.yaml`: `DEBUG=false`, `restart: unless-stopped`, а `SECRET_KEY`, `ALLOWED_HOSTS` і `DB_PASSWORD` обов'язкові (без них compose не стартує):
+
+```powershell
+docker compose -f compose.yaml -f compose.prod.yaml up -d --build
+```
+
+HTTPS і reverse proxy перед `web` цей файл не налаштовує.
 
 Усі змінні з `.env` потрапляють у контейнери (`env_file`), тож ліміти, `CORS_ALLOWED_ORIGINS` тощо діють і в Docker. Винятки — адреси БД, Redis, кешу, Exporter і `USE_SQLITE`/`CELERY_TASK_ALWAYS_EAGER`: `compose.yaml` задає їх сам, бо значення з локального `.env` (`127.0.0.1`) у контейнері не працюють. Після зміни `.env` перезапусти сервіси: `docker compose up -d`.
 

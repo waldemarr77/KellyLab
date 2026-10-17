@@ -53,6 +53,8 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    # Serves the admin's static files from gunicorn, without a separate web server.
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -250,6 +252,13 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = 'static/'
+# Filled by `collectstatic` when the Docker image is built.
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+STORAGES = {
+    'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},
+    # Compressed files with a content hash in the name, so browsers may cache them for good.
+    'staticfiles': {'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage'},
+}
 
 # Without EMAIL_HOST letters are printed to the console (local development).
 # Lowercase name: Django forbids the old EMAIL_* settings next to MAILERS.

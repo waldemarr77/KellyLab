@@ -11,3 +11,4 @@ tmp
 media
 .coverage
 htmlcov
+staticfiles
