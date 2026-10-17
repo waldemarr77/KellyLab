@@ -16,6 +16,7 @@ from questions.models import Question
 from users.models import CustomUser
 
 from .models import Export
+from .tasks import delete_old_exports
 
 FAKE_FILES = {'pdf': b'%PDF-1.4 fake file', 'docx': b'PK fake file'}
 FAKE_FILE = FAKE_FILES['pdf']
@@ -159,6 +160,16 @@ class ExportTests(APITestCase):
         with self.captureOnCommitCallbacks(execute=True):
             self.user.delete()
         self.assertFalse(storage.exists(name))
+
+    def test_old_exports_are_deleted_with_their_files(self):
+        old = Export.objects.get(pk=self.client.post(self.url, {'format': 'pdf'}, format='json').data['id'])
+        new = Export.objects.get(pk=self.client.post(self.url, {'format': 'docx'}, format='json').data['id'])
+        Export.objects.filter(pk=old.pk).update(created_at=timezone.now() - settings.EXPORT_KEEP_FOR - timedelta(hours=1))
+        with self.captureOnCommitCallbacks(execute=True):
+            delete_old_exports()
+        self.assertEqual(list(Export.objects.values_list('pk', flat=True)), [new.pk])
+        self.assertFalse(old.file.storage.exists(old.file.name))
+        self.assertTrue(new.file.storage.exists(new.file.name))
 
     def saved_files(self):
         return [path for path in Path(self.media_root).rglob('*') if path.is_file()]

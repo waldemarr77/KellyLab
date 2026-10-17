@@ -86,6 +86,16 @@ services:
       redis:
         condition: service_healthy
 
+  # Sends the daily cleanup tasks to the `celery` queue; run exactly one.
+  beat:
+    <<: *app
+    command: celery -A config beat --loglevel=info --schedule /tmp/celerybeat-schedule
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
 volumes:
   postgres_data:
   media:

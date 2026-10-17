@@ -18,6 +18,7 @@ from questions.tasks import generate_session_answers
 from users.models import CustomUser
 
 from .models import AIUsage, GlobalAIUsage, Session
+from .tasks import delete_old_ai_usage
 
 
 def parts(answer):
@@ -549,14 +550,36 @@ class InterviewFlowTests(APITestCase):
         self.assertEqual(self.client.post(self.url + 'reorder/', {'ids': ids}, format='json').status_code, 409)
         self.assertEqual(self.texts(), ['Що таке ORM?', 'Що таке транзакція?'])
 
+    @override_settings(DEBUG=True)
     def test_schema_lists_question_endpoints(self):
         paths = self.client.get('/api/schema/?format=openapi').json()['paths']
         self.assertIn('post', paths['/sessions/{id}/questions/'])
         self.assertIn('post', paths['/sessions/{id}/reorder/'])
         self.assertIn('delete', paths['/questions/{id}/'])
 
-    def test_schema_is_available(self):
+    def test_old_ai_usage_is_deleted(self):
+        today = timezone.localdate()
+        old = today - settings.AI_USAGE_KEEP_FOR - timedelta(days=1)
+        for date in (old, today):
+            AIUsage.objects.create(user=self.user, date=date, questions=1)
+            GlobalAIUsage.objects.create(date=date, questions=1)
+        delete_old_ai_usage()
+        self.assertEqual(list(AIUsage.objects.values_list('date', flat=True)), [today])
+        self.assertEqual(list(GlobalAIUsage.objects.values_list('date', flat=True)), [today])
+
+    @override_settings(DEBUG=True)
+    def test_schema_is_open_in_development(self):
         self.client.force_authenticate(None)
+        self.assertEqual(self.client.get('/api/schema/?format=openapi').status_code, 200)
+
+    def test_schema_is_staff_only_in_production(self):
+        self.client.force_authenticate(None)
+        self.assertEqual(self.client.get('/api/schema/?format=openapi').status_code, 403)
+        self.assertEqual(self.client.get('/api/docs/').status_code, 403)
+        self.client.force_authenticate(self.user)
+        self.assertEqual(self.client.get('/api/schema/?format=openapi').status_code, 403)
+        self.user.is_staff = True
+        self.user.save(update_fields=['is_staff'])
         self.assertEqual(self.client.get('/api/schema/?format=openapi').status_code, 200)
 
 

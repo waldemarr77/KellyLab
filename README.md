@@ -29,7 +29,7 @@ $env:CELERY_TASK_ALWAYS_EAGER = 'true'
 
 Існуючий `.env` не змінювався. Змінні поточного процесу мають пріоритет. На чистій машині потрібен Python 3.13: `python -m venv venv`, потім `.\venv\Scripts\python.exe -m pip install -r requirements-dev.txt`. Скопіюй `.env.example` у `.env`, лише якщо власного `.env` ще немає. `requirements.txt` містить залежності застосунку, `requirements-dev.txt` додає інструменти розробки (ruff).
 
-Відкрий http://127.0.0.1:8000/api/docs/. У Swagger після отримання JWT натисни **Authorize** і введи `Bearer <access>`.
+Відкрий http://127.0.0.1:8000/api/docs/. У Swagger після отримання JWT натисни **Authorize** і введи `Bearer <access>`. Swagger і `/api/schema/` відкриті лише при `DEBUG=true`; у production їх бачить тільки staff, який увійшов в адмінку.
 
 В іншому PowerShell можна запустити весь сценарій:
 
@@ -45,7 +45,7 @@ $env:CELERY_TASK_ALWAYS_EAGER = 'true'
 docker compose --env-file .env up --build
 ```
 
-Міграції виконує окремий сервіс перед стартом web/worker. API: http://127.0.0.1:8000/api/docs/. PostgreSQL і файли експорту (`media/`) зберігаються в named volumes `postgres_data` і `media`; `media` спільний для `web` (віддає файл) і `worker` (записує його). `docker compose down` зупиняє сервіси, зберігаючи дані; `docker compose down -v` видаляє і їх. Це конфігурація для локальної розробки, з Django development server.
+Міграції виконує окремий сервіс перед стартом web/worker. API: http://127.0.0.1:8000/api/docs/. PostgreSQL і файли експорту (`media/`) зберігаються в named volumes `postgres_data` і `media`; `media` спільний для `web` (віддає файл) і `worker` (записує його). Сервіс `beat` раз на добу запускає очищення: експорти, старші 7 днів (`EXPORT_KEEP_FOR`), видаляються разом із файлами; лічильники AI-квоти, старші 30 днів (`AI_USAGE_KEEP_FOR`), теж видаляються, а `flushexpiredtokens` прибирає прострочені JWT з blacklist. `beat` має бути один. `docker compose down` зупиняє сервіси, зберігаючи дані; `docker compose down -v` видаляє і їх. Це конфігурація для локальної розробки, з Django development server.
 
 Усі змінні з `.env` потрапляють у контейнери (`env_file`), тож ліміти, `CORS_ALLOWED_ORIGINS` тощо діють і в Docker. Винятки — адреси БД, Redis, кешу, Exporter і `USE_SQLITE`/`CELERY_TASK_ALWAYS_EAGER`: `compose.yaml` задає їх сам, бо значення з локального `.env` (`127.0.0.1`) у контейнері не працюють. Після зміни `.env` перезапусти сервіси: `docker compose up -d`.
 
@@ -60,9 +60,9 @@ GEMINI_API_KEY=your-key
 GEMINI_MODEL=model-id-available-to-your-account
 ```
 
-Перезапусти Django і worker; у Docker використай `docker compose --env-file .env up --build` із власними значеннями. Якщо секрет містить `$`, у dotenv візьми його в одинарні лапки, щоб Compose не сприйняв частину секрету як змінну. ID моделі задається явно, оскільки доступність залежить від акаунта. Питання, посада та рівень надсилаються в API Google; запити можуть бути платними. SDK використовується за [офіційною документацією Google](https://googleapis.github.io/python-genai/).
+Перезапусти Django і worker; у Docker використай `docker compose --env-file .env up --build` із власними значеннями. Якщо секрет містить `$`, у dotenv візьми його в одинарні лапки, щоб Compose не сприйняв частину секрету як змінну. ID моделі задається явно, оскільки доступність залежить від акаунта. Питання, посада та рівень надсилаються в API Google; запити можуть бути платними. На free tier Google може використовувати надіслані дані для покращення своїх продуктів, тому перед реальним запуском потрібен платний tier або попередження для користувачів у фронтенді. SDK використовується за [офіційною документацією Google](https://googleapis.github.io/python-genai/).
 
-Для фонового режиму поза Docker потрібні Redis і `CELERY_TASK_ALWAYS_EAGER=false`; worker: `celery -A config worker -Q celery,ai --concurrency=1 --prefetch-multiplier=1 --loglevel=info` у Linux/WSL (без `-Q celery,ai` генерація зависне в `processing`). Для локального запуску на Windows простіше eager або Docker. Eager блокує HTTP-запит до завершення генерації, але теж звертається до справжнього Gemini.
+Для фонового режиму поза Docker потрібні Redis і `CELERY_TASK_ALWAYS_EAGER=false`; worker: `celery -A config worker -Q celery,ai --concurrency=1 --prefetch-multiplier=1 --loglevel=info` у Linux/WSL, а для щоденного очищення ще `celery -A config beat --loglevel=info` (без `-Q celery,ai` генерація зависне в `processing`). Для локального запуску на Windows простіше eager або Docker. Eager блокує HTTP-запит до завершення генерації, але теж звертається до справжнього Gemini.
 
 ## API
 

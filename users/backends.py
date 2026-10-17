@@ -38,11 +38,12 @@ class LoginLimitBackend(ModelBackend):
     """ModelBackend that refuses to check passwords after too many failures; used by the API and the admin."""
 
     def authenticate(self, request, username=None, password=None, **kwargs):
-        email = username or kwargs.get(get_user_model().USERNAME_FIELD) or ''
+        # Emails are stored in lower case, so the admin login form finds 'Admin@Example.com' too.
+        email = (username or kwargs.pop(get_user_model().USERNAME_FIELD, None) or '').strip().lower()
         if login_locked(request, email):
             # Stops other backends as well; the caller sees an ordinary failed login.
             raise PermissionDenied
-        user = super().authenticate(request, username, password, **kwargs)
+        user = super().authenticate(request, email, password, **kwargs)
         if user is None:
             record_failure(request, email)
         return user

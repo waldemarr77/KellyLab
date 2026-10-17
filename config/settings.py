@@ -156,6 +156,12 @@ CELERY_TASK_REJECT_ON_WORKER_LOST = True
 # Gemini's rate limit is per key and the pause between requests is kept per task,
 # so generation runs in its own queue served by a single worker process.
 CELERY_TASK_ROUTES = {'questions.tasks.generate_session_answers': {'queue': 'ai'}}
+# Daily cleanup, run by `celery beat` (the `beat` service in compose.yaml).
+CELERY_BEAT_SCHEDULE = {
+    'delete-old-exports': {'task': 'exports.tasks.delete_old_exports', 'schedule': timedelta(days=1)},
+    'delete-old-ai-usage': {'task': 'interviews.tasks.delete_old_ai_usage', 'schedule': timedelta(days=1)},
+    'flush-expired-tokens': {'task': 'users.tasks.flush_expired_tokens', 'schedule': timedelta(days=1)},
+}
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
 GEMINI_MODEL = os.getenv('GEMINI_MODEL', '')
 AI_MAX_ATTEMPTS = 3
@@ -175,6 +181,8 @@ AI_DAILY_QUESTION_LIMIT = int(os.getenv('AI_DAILY_QUESTION_LIMIT', '100'))
 AI_GLOBAL_DAILY_QUESTION_LIMIT = int(os.getenv('AI_GLOBAL_DAILY_QUESTION_LIMIT', '400'))
 # Gemini resets daily quotas at midnight Pacific time, not UTC.
 GEMINI_QUOTA_TIMEZONE = ZoneInfo('America/Los_Angeles')
+# Quotas only read today's counters; older ones are kept a while for the admin, then deleted.
+AI_USAGE_KEEP_FOR = timedelta(days=30)
 # A processing session without saved progress for this long is treated as stuck
 # and can be regenerated or deleted. Must exceed the worst case for one question.
 GENERATION_STALE_AFTER = timedelta(minutes=10)
@@ -196,6 +204,8 @@ EXPORTER_TIMEOUT_SECONDS = 60
 EXPORT_MAX_BYTES = 20 * 1024 * 1024
 # Longer than the export task's time limit (6 min): an older pending/processing export is dead.
 EXPORT_STALE_AFTER = timedelta(minutes=10)
+# Older exports are deleted with their files; a new one is made from the current session on request.
+EXPORT_KEEP_FOR = timedelta(days=7)
 FILE_UPLOAD_MAX_MEMORY_SIZE = 1024 * 1024
 
 

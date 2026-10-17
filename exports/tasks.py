@@ -78,3 +78,9 @@ def generate_export(export_id):
     if not saved:
         # The session was deleted while the Exporter worked: no row points to the file any more.
         export.file.storage.delete(export.file.name)
+
+
+@shared_task
+def delete_old_exports():
+    # Row by row, so the post_delete signal removes each file as well.
+    Export.objects.filter(created_at__lt=timezone.now() - settings.EXPORT_KEEP_FOR).delete()
