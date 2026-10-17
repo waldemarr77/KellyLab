@@ -82,7 +82,7 @@ jobs:
           python-version: '3.13'
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt -c requirements-dev.txt coverage
 
       - name: Check migration consistency
         run: python manage.py makemigrations --check --dry-run
@@ -91,4 +91,24 @@ jobs:
         run: python manage.py migrate
 
       - name: Run tests
-        run: python manage.py test
+        run: coverage run manage.py test
+
+      # The table goes to the run's Summary page; the second report prints it to the log
+      # and fails the job below fail_under from .coveragerc.
+      - name: Coverage report
+        run: |
+          coverage report --format=markdown --fail-under=0 >> "$GITHUB_STEP_SUMMARY"
+          coverage report
+
+  docker:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Build image
+        run: docker build -t kellylab:ci .
+
+      # Catches a package missing from the image or settings that fail to load inside it.
+      - name: Run Django checks in the image
+        run: docker run --rm -e SECRET_KEY=ci-docker-check-secret-key-at-least-32-characters kellylab:ci python manage.py check

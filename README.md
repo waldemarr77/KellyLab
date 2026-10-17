@@ -131,6 +131,15 @@ PDF/DOCX-експорт асинхронний: `POST .../exports/` поверт
 .\venv\Scripts\python.exe manage.py makemigrations --check --dry-run --settings=config.test_settings
 ```
 
+Покриття тестами (налаштування й поріг 95% — у `.coveragerc`):
+
+```powershell
+.\venv\Scripts\coverage.exe run manage.py test --settings=config.test_settings
+.\venv\Scripts\coverage.exe report
+```
+
+CI, крім тестів, збирає Docker-образ і запускає в ньому `manage.py check`, а таблицю покриття показує на сторінці запуску (Summary); покриття нижче 95% ламає CI.
+
 Локальні тести використовують окрему SQLite-базу в пам'яті. Зовнішній SDK Gemini заміняється через `unittest.mock` лише всередині тестів; у застосунку генерація завжди звертається до Gemini. CI запускає тести на PostgreSQL. Перевіряються JWT, повний сценарій, ізоляція користувачів, валідація файлів, помилки AI/черги, відсутня конфігурація та збереження правок. Живі Gemini, Redis, Docker і конкурентні блокування PostgreSQL потребують окремого інтеграційного запуску.
 
 Якщо worker впав, Celery доставить задачу повторно (`acks_late`). Сесія, яка 10 хвилин (`GENERATION_STALE_AFTER`) не зберегла жодної відповіді, вважається завислою: її можна запустити повторно або видалити без 409. Задача обмежена 30 хвилинами. Для production ще потрібні обмеження частоти AI-запитів, контроль бюджету й перевірка налаштувань розгортання.

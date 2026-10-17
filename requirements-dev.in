@@ -4,3 +4,4 @@
 ruff==0.16.6
 pip-tools
 pip-audit
+coverage

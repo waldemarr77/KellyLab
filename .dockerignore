@@ -9,3 +9,5 @@ __pycache__
 .github
 tmp
 media
+.coverage
+htmlcov
