@@ -209,6 +209,24 @@ EXPORT_KEEP_FOR = timedelta(days=7)
 FILE_UPLOAD_MAX_MEMORY_SIZE = 1024 * 1024
 
 
+# Everything goes to stdout, where `docker compose logs` reads it. Celery workers keep their own
+# handler with the task name, so task logs end up in the worker's output.
+LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {'plain': {'format': '{asctime} {levelname} {name}: {message}', 'style': '{'}},
+    'handlers': {'console': {'class': 'logging.StreamHandler', 'stream': 'ext://sys.stdout', 'formatter': 'plain'}},
+    'root': {'handlers': ['console'], 'level': LOG_LEVEL},
+    'loggers': {
+        # Django's own config also prints to the console under DEBUG; one handler is enough.
+        'django': {'handlers': ['console'], 'level': LOG_LEVEL, 'propagate': False},
+        # One INFO line per HTTP request to Gemini and the Exporter is noise.
+        'httpx': {'level': 'WARNING'},
+    },
+}
+
+
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
     {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator'},

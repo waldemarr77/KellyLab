@@ -10,6 +10,8 @@ from rest_framework.routers import DefaultRouter
 from interviews.views import SessionViewSet
 from questions.views import QuestionViewSet
 
+from .health import health
+
 router = DefaultRouter()
 router.register('sessions', SessionViewSet, basename='session')
 router.register('questions', QuestionViewSet, basename='question')
@@ -29,6 +31,7 @@ schema_view = get_schema_view(
 
 urlpatterns = [
     path('admin/', admin.site.urls),
+    path('api/health/', health, name='health'),
     path('api/auth/', include('users.urls')),
     path('api/', include(router.urls)),
     path('api/docs/', schema_view.with_ui('swagger', cache_timeout=0), name='api-docs'),
