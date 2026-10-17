@@ -105,6 +105,8 @@ REST_FRAMEWORK = {
         # Creating sessions and importing questions; both only grow the database.
         'session_write': os.getenv('SESSION_WRITE_THROTTLE_RATE', '60/hour'),
         'verification_email': os.getenv('VERIFICATION_EMAIL_THROTTLE_RATE', '3/hour'),
+        # Every attempt runs the code once per test case in the runner.
+        'code_run': os.getenv('CODE_RUN_THROTTLE_RATE', '10/minute'),
     },
     # With 0 the client is REMOTE_ADDR and X-Forwarded-For is ignored;
     # otherwise only the addresses appended by our proxies count.
@@ -230,6 +232,14 @@ EXPORT_STALE_AFTER = timedelta(minutes=10)
 # Older exports are deleted with their files; a new one is made from the current session on request.
 EXPORT_KEEP_FOR = timedelta(days=7)
 FILE_UPLOAD_MAX_MEMORY_SIZE = 1024 * 1024
+# Runner service: executes submitted code in isolation. Reachable only by the worker.
+RUNNER_URL = os.getenv('RUNNER_URL', 'http://127.0.0.1:8003')
+# Seconds per test case; the runner runs up to 50 of them one by one.
+CODE_TIME_LIMIT_SECONDS = 2
+RUNNER_TIMEOUT_SECONDS = 50 * (CODE_TIME_LIMIT_SECONDS + 2)
+MAX_SOLUTION_LENGTH = 20_000
+# Longer than the check task's time limit: an older 'checking' attempt is dead and does not block new ones.
+CODE_CHECK_STALE_AFTER = timedelta(minutes=10)
 
 
 # Everything goes to stdout, where `docker compose logs` reads it. Celery workers keep their own

@@ -14,3 +14,5 @@ CACHES = {'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'
 LOGGING['root']['level'] = 'WARNING'
 # The manifest exists only after collectstatic; tests render admin pages without it.
 STORAGES = {**STORAGES, 'staticfiles': {'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage'}}
+# 4xx responses are expected in API tests; Django logs each one as a warning.
+LOGGING['loggers']['django']['level'] = 'ERROR'
