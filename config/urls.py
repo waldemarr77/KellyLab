@@ -8,7 +8,11 @@ from rest_framework.permissions import BasePermission
 from rest_framework.routers import DefaultRouter
 
 from interviews.views import SessionViewSet
-from practice.views import CodingAttemptViewSet, CodingTaskViewSet
+from practice.views import (
+    CodingAttemptViewSet,
+    CodingTaskViewSet,
+    QuestionPracticeViewSet,
+)
 from questions.views import QuestionViewSet
 
 from .health import health
@@ -18,6 +22,7 @@ router.register('sessions', SessionViewSet, basename='session')
 router.register('questions', QuestionViewSet, basename='question')
 router.register('coding-tasks', CodingTaskViewSet, basename='coding-task')
 router.register('coding-attempts', CodingAttemptViewSet, basename='coding-attempt')
+router.register('practices', QuestionPracticeViewSet, basename='practice')
 
 
 class DocsPermission(BasePermission):

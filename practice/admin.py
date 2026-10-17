@@ -32,7 +32,7 @@ class QuestionPracticeAdmin(admin.ModelAdmin):
             'fields': ('question', 'title', 'description', 'difficulty'),
         }),
         ('Рішення', {
-            'fields': ('status', 'user_solution', 'feedback'),
+            'fields': ('status', 'user_solution', 'feedback', 'error_message'),
         }),
         ('Дати', {
             'fields': ('created_at', 'updated_at'),

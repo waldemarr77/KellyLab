@@ -12,18 +12,32 @@ from rest_framework.throttling import UserRateThrottle
 from config.exceptions import Conflict
 from users.models import CustomUser
 
-from .models import SUPPORTED_LANGUAGES, CodingAttempt, CodingTask, PracticeStatus
+from .models import (
+    SUPPORTED_LANGUAGES,
+    CodingAttempt,
+    CodingTask,
+    PracticeStatus,
+    QuestionPractice,
+)
 from .serializers import (
     CodingAttemptCreateSerializer,
     CodingAttemptSerializer,
     CodingTaskListSerializer,
     CodingTaskSerializer,
+    QuestionPracticeSerializer,
+    SolutionSerializer,
 )
+from .services import QueueUnavailable, start_review
 from .tasks import check_attempt
 
 
 class CodeRunThrottle(UserRateThrottle):
     scope = 'code_run'
+
+
+class PracticeThrottle(UserRateThrottle):
+    # Its own scope: practice requests must not use up the session generation limit.
+    scope = 'practice'
 
 
 class CodingTaskViewSet(viewsets.ReadOnlyModelViewSet):
@@ -83,3 +97,32 @@ class CodingAttemptViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, vie
         if task and task.isdigit():
             queryset = queryset.filter(task_id=task)
         return queryset
+
+
+class QuestionPracticeViewSet(
+    mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.DestroyModelMixin, viewsets.GenericViewSet,
+):
+    """Practices of the user's own questions; they are created through POST /api/questions/{id}/practices/."""
+
+    serializer_class = QuestionPracticeSerializer
+
+    def get_queryset(self):
+        if getattr(self, 'swagger_fake_view', False):
+            return QuestionPractice.objects.none()
+        queryset = QuestionPractice.objects.filter(question__session__user=self.request.user)
+        question = self.request.query_params.get('question')
+        if question and question.isdigit():
+            queryset = queryset.filter(question_id=question)
+        return queryset
+
+    @swagger_auto_schema(method='post', request_body=SolutionSerializer, responses={202: QuestionPracticeSerializer})
+    @action(detail=True, methods=['post'], throttle_classes=[PracticeThrottle])
+    def solution(self, request, pk=None):
+        practice = self.get_object()
+        serializer = SolutionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            practice = start_review(request.user, practice, serializer.validated_data['code'])
+        except QueueUnavailable:
+            return Response({'detail': 'Не вдалося передати задачу в чергу.'}, status=503)
+        return Response(QuestionPracticeSerializer(practice).data, status=status.HTTP_202_ACCEPTED)

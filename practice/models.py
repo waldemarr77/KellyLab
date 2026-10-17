@@ -1,6 +1,7 @@
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.utils import timezone
 
 from questions.models import Question
 
@@ -16,6 +17,7 @@ class PracticeStatus(models.TextChoices):
     PARTIAL = 'partial', 'Частково правильно виконано'
     SUCCESS = 'success', 'Успішно'
     CHECKING = 'checking', 'Перевіряється'
+    GENERATING = 'generating', 'Генерується'
     # The code was not checked (runner or queue unavailable); not the user's mistake.
     ERROR = 'error', 'Помилка перевірки'
 
@@ -35,11 +37,13 @@ class QuestionPractice(models.Model):
         related_name='practices',
         verbose_name='Питання',
     )
+    # Empty while the task is being generated.
     title = models.CharField(
         max_length=255,
+        blank=True,
         verbose_name='Назва завдання'
     )
-    description = models.TextField(verbose_name='Умова завдання')
+    description = models.TextField(blank=True, verbose_name='Умова завдання')
     difficulty = models.CharField(
         max_length=10,
         choices=Difficulty.choices,
@@ -60,6 +64,8 @@ class QuestionPractice(models.Model):
         blank=True,
         verbose_name='Пояснення оцінки'
     )
+    # Why the last generation or review did not happen; the review itself goes to feedback.
+    error_message = models.TextField(blank=True, verbose_name='Пояснення помилки')
     created_at = models.DateTimeField(
         auto_now_add=True,
         verbose_name='Створено'
@@ -75,7 +81,15 @@ class QuestionPractice(models.Model):
         verbose_name_plural = 'Практики до питань'
 
     def __str__(self):
-        return self.title[:30]
+        return self.title[:30] or f'Практика {self.pk}'
+
+    @property
+    def is_busy(self):
+        """Generation or review is running; like a session run, a silent one is considered dead."""
+        return (
+            self.status in (PracticeStatus.GENERATING, PracticeStatus.CHECKING)
+            and self.updated_at > timezone.now() - settings.GENERATION_STALE_AFTER
+        )
 
 
 class CodingTask(models.Model):

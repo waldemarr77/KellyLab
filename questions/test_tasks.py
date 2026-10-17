@@ -2,6 +2,7 @@ from unittest.mock import Mock, patch
 
 import httpx
 from celery.exceptions import SoftTimeLimitExceeded
+from django.core.cache import cache
 from django.test import SimpleTestCase, override_settings
 from google.genai import errors as genai_errors
 
@@ -87,11 +88,14 @@ class GenerateWithRetriesTests(SimpleTestCase):
 
 @override_settings(AI_MIN_INTERVAL_SECONDS=4)
 @patch('questions.tasks.time.sleep')
-@patch('questions.tasks.time.monotonic')
+@patch('questions.tasks.clock')
 class ThrottledTests(SimpleTestCase):
-    def test_waits_remaining_interval_between_calls(self, monotonic, sleep):
+    def setUp(self):
+        cache.clear()  # The time of the last call is shared through the cache.
+
+    def test_waits_remaining_interval_between_calls(self, clock, sleep):
         # First call at 100 s, second starts 1 s later -> wait the remaining 3 s.
-        monotonic.side_effect = [100, 101, 104]
+        clock.side_effect = [100, 101, 104]
         generate = Mock(return_value='Answer')
         call = throttled(generate)
         call('Q1')
@@ -99,12 +103,19 @@ class ThrottledTests(SimpleTestCase):
         sleep.assert_called_once_with(3)
         self.assertEqual(generate.call_count, 2)
 
-    def test_no_wait_when_interval_already_passed(self, monotonic, sleep):
-        monotonic.side_effect = [100, 105, 105]
+    def test_no_wait_when_interval_already_passed(self, clock, sleep):
+        clock.side_effect = [100, 105, 105]
         call = throttled(Mock(return_value='Answer'))
         call('Q1')
         call('Q2')
         sleep.assert_not_called()
+
+    def test_interval_is_kept_across_tasks(self, clock, sleep):
+        # Two separate wrappers, as in two tasks run one after another by the AI worker.
+        clock.side_effect = [100, 101, 104]
+        throttled(Mock())('Q1')
+        throttled(Mock())('Q2')
+        sleep.assert_called_once_with(3)
 
 
 class TaskRoutingTests(SimpleTestCase):

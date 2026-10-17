@@ -107,6 +107,8 @@ REST_FRAMEWORK = {
         'verification_email': os.getenv('VERIFICATION_EMAIL_THROTTLE_RATE', '3/hour'),
         # Every attempt runs the code once per test case in the runner.
         'code_run': os.getenv('CODE_RUN_THROTTLE_RATE', '10/minute'),
+        # Generating a practice task or reviewing a solution; each also costs one question of the AI quota.
+        'practice': os.getenv('PRACTICE_THROTTLE_RATE', '10/minute'),
     },
     # With 0 the client is REMOTE_ADDR and X-Forwarded-For is ignored;
     # otherwise only the addresses appended by our proxies count.
@@ -178,9 +180,13 @@ CELERY_TASK_PUBLISH_RETRY = False
 # Re-deliver a task if the worker dies mid-run instead of losing it.
 CELERY_TASK_ACKS_LATE = True
 CELERY_TASK_REJECT_ON_WORKER_LOST = True
-# Gemini's rate limit is per key and the pause between requests is kept per task,
-# so generation runs in its own queue served by a single worker process.
-CELERY_TASK_ROUTES = {'questions.tasks.generate_session_answers': {'queue': 'ai'}}
+# Gemini's rate limit is per key, so every task that calls it runs in its own queue served by
+# a single worker process; the pause between requests is shared through the cache.
+CELERY_TASK_ROUTES = {
+    'questions.tasks.generate_session_answers': {'queue': 'ai'},
+    'practice.tasks.generate_practice': {'queue': 'ai'},
+    'practice.tasks.review_solution': {'queue': 'ai'},
+}
 # Daily cleanup, run by `celery beat` (the `beat` service in compose.yaml).
 CELERY_BEAT_SCHEDULE = {
     'delete-old-exports': {'task': 'exports.tasks.delete_old_exports', 'schedule': timedelta(days=1)},

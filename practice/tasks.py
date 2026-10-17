@@ -5,7 +5,12 @@ from celery import shared_task
 from django.conf import settings
 from django.utils import timezone
 
-from .models import CodingAttempt, PracticeStatus
+from interviews.quota import refund_daily_quota
+from questions.ai import BadAIResponse
+from questions.tasks import describe_error, generate_with_retries, throttled
+
+from .ai import solution_reviewer, task_generator
+from .models import CodingAttempt, PracticeStatus, QuestionPractice
 
 logger = logging.getLogger(__name__)
 
@@ -84,3 +89,74 @@ def check_attempt(attempt_id):
         feedback=f'Пройдено {passed} з {len(results)} тестів.',
         updated_at=timezone.now(),
     )
+
+
+def run_practice_ai(practice_id, status, charge, call):
+    """Shared frame of the two AI tasks: claim the row, call Gemini once, store the outcome.
+
+    call(practice, user, send) makes the request through send(), which marks it as sent, and returns
+    the fields to save. The quota was charged at launch; it is refunded only if nothing was sent.
+    """
+    # The row is changed with update(), never save(): the practice can be deleted at any moment.
+    active = QuestionPractice.objects.filter(pk=practice_id, status=status)
+    practice = active.select_related('question__session__user').first()
+    if practice is None:
+        # No refund: a redelivered copy of a finished task also lands here, and its request was sent.
+        return
+    # It may have waited in the queue; mark it alive before the possibly slow request.
+    if not active.update(updated_at=timezone.now()):
+        return
+    sent = False
+
+    def send(*args):
+        nonlocal sent
+        sent = True
+        return generate_with_retries(*args)
+
+    try:
+        fields = call(practice, practice.question.session.user, send)
+    except BadAIResponse as exc:
+        logger.warning('No usable AI reply for practice %s: %s', practice_id, describe_error(exc))
+        fields = {'status': PracticeStatus.ERROR, 'error_message': 'AI не дав придатної відповіді. Спробуй ще раз.'}
+    except Exception as exc:  # noqa: BLE001 -- task boundary must persist failed state for any provider failure
+        # Never the provider's message: it can contain credentials or private input.
+        logger.warning('Practice %s AI request failed: %s', practice_id, describe_error(exc))
+        fields = {
+            'status': PracticeStatus.ERROR,
+            'error_message': 'Не вдалося звернутися до AI. Перевір налаштування AI та повтори.',
+        }
+    finally:
+        if charge and not sent:
+            refund_daily_quota(charge, charge['questions'])
+    active.update(**fields, updated_at=timezone.now())
+
+
+# Stay well below the Redis visibility timeout (1 h), as the session generation task does.
+@shared_task(soft_time_limit=10 * 60, time_limit=11 * 60)
+def generate_practice(practice_id, difficulty=None, charge=None):
+    def call(practice, user, send):
+        with task_generator(user.target_position, user.experience_level) as generate:
+            task = send(throttled(generate), practice.question.text, difficulty)
+        return {
+            'title': task['title'][:255],
+            'description': task['description'],
+            # A difficulty the user asked for wins over the model's choice.
+            'difficulty': difficulty or task['difficulty'],
+            'status': PracticeStatus.NOT_STARTED,
+            'error_message': '',
+        }
+
+    run_practice_ai(practice_id, PracticeStatus.GENERATING, charge, call)
+
+
+@shared_task(soft_time_limit=10 * 60, time_limit=11 * 60)
+def review_solution(practice_id, charge=None):
+    def call(practice, user, send):
+        with solution_reviewer(user.target_position, user.experience_level) as review:
+            result = send(
+                throttled(review), practice.question.text, practice.title, practice.description,
+                practice.user_solution,
+            )
+        return {'status': result['status'], 'feedback': result['feedback'], 'error_message': ''}
+
+    run_practice_ai(practice_id, PracticeStatus.CHECKING, charge, call)

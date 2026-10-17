@@ -1,7 +1,7 @@
 from django.conf import settings
 from rest_framework import serializers
 
-from .models import CodingAttempt, CodingTask
+from .models import CodingAttempt, CodingTask, Difficulty, QuestionPractice
 
 
 class CodingTaskListSerializer(serializers.ModelSerializer):
@@ -39,5 +39,24 @@ class CodingAttemptSerializer(serializers.ModelSerializer):
         fields = (
             'id', 'task', 'user_solution', 'status', 'feedback',
             'passed_tests', 'total_tests', 'results', 'created_at', 'updated_at',
+        )
+        read_only_fields = fields
+
+
+class PracticeCreateSerializer(serializers.Serializer):
+    # Empty: the model chooses by the user's level.
+    difficulty = serializers.ChoiceField(choices=Difficulty.choices, required=False)
+
+
+class SolutionSerializer(serializers.Serializer):
+    code = serializers.CharField(max_length=settings.MAX_SOLUTION_LENGTH, trim_whitespace=False)
+
+
+class QuestionPracticeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = QuestionPractice
+        fields = (
+            'id', 'question', 'title', 'description', 'difficulty', 'status',
+            'user_solution', 'feedback', 'error_message', 'created_at', 'updated_at',
         )
         read_only_fields = fields

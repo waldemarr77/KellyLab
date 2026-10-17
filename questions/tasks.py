@@ -4,6 +4,7 @@ import time
 import httpx
 from celery import shared_task
 from django.conf import settings
+from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
 from google.genai import errors as genai_errors
@@ -37,25 +38,37 @@ def describe_error(exc):
     status = exc.code if isinstance(exc, genai_errors.APIError) else None
     return f'{type(exc).__name__} (status {status})' if status else type(exc).__name__
 
-def throttled(generate):
-    """Wrap generate so consecutive calls are at least AI_MIN_INTERVAL_SECONDS apart."""
-    last_call = None
+AI_LAST_CALL_KEY = 'ai:last-call'
 
-    def call(question):
-        nonlocal last_call
-        if last_call is not None:
-            remaining = settings.AI_MIN_INTERVAL_SECONDS - (time.monotonic() - last_call)
-            if remaining > 0:
-                time.sleep(remaining)
-        last_call = time.monotonic()
-        return generate(question)
+def clock():
+    # Wall time, not monotonic: the value is compared across processes and worker restarts.
+    return time.time()
+
+def wait_for_ai_slot():
+    """Keep Gemini requests at least AI_MIN_INTERVAL_SECONDS apart across tasks, not only within one.
+
+    The time lives in the cache, so a practice task right after a session run also waits.
+    Read-then-write is safe: the `ai` queue has a single worker process.
+    """
+    last_call = cache.get(AI_LAST_CALL_KEY)
+    if last_call is not None:
+        remaining = settings.AI_MIN_INTERVAL_SECONDS - (clock() - last_call)
+        if remaining > 0:
+            time.sleep(remaining)
+    cache.set(AI_LAST_CALL_KEY, clock(), timeout=60)
+
+def throttled(generate):
+    """Wrap generate so every call waits for its slot first."""
+    def call(*args):
+        wait_for_ai_slot()
+        return generate(*args)
 
     return call
 
-def generate_with_retries(generate, question):
+def generate_with_retries(generate, *args):
     for attempt in range(1, settings.AI_MAX_ATTEMPTS + 1):
         try:
-            return generate(question)
+            return generate(*args)
         except Exception as exc:
             if not is_transient(exc) or attempt == settings.AI_MAX_ATTEMPTS:
                 raise
