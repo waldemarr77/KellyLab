@@ -192,6 +192,8 @@ MEDIA_ROOT = BASE_DIR / 'media'
 MEDIA_URL = 'media/'
 EXPORTER_URL = os.getenv('EXPORTER_URL', 'http://127.0.0.1:8002')
 EXPORTER_TIMEOUT_SECONDS = 60
+# A session holds up to 50 questions; a larger reply from the Exporter is not a real export.
+EXPORT_MAX_BYTES = 20 * 1024 * 1024
 # Longer than the export task's time limit (6 min): an older pending/processing export is dead.
 EXPORT_STALE_AFTER = timedelta(minutes=10)
 FILE_UPLOAD_MAX_MEMORY_SIZE = 1024 * 1024

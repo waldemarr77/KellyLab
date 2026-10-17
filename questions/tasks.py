@@ -75,6 +75,9 @@ def generate_session_answers(session_id, run_id, mode='missing', charge=None):
     if session is None:
         # No refund here: a redelivered copy of a finished run also lands here, and its questions were sent.
         return
+    # The run may have waited in the queue; mark it alive before the first, possibly slow, answer.
+    if not active_run.update(updated_at=timezone.now()):
+        return
     questions = session.questions.order_by('order', 'id')
     if mode == 'missing':
         # Edited questions have their AI answer cleared, so only they are sent to the AI.

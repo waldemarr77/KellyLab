@@ -3,6 +3,7 @@ from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
 import httpx
+from django.conf import settings
 from django.core.cache import cache
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import override_settings
@@ -326,6 +327,25 @@ class InterviewFlowTests(APITestCase):
         generate_session_answers(self.session.pk, 'old-run')
         self.assertEqual(self.ai_client.models.generate_content.call_count, 1)
         self.assertFalse(self.session.questions.exclude(ai_answer=None).exists())
+
+    def test_run_that_waited_in_queue_is_alive_at_start(self):
+        self.import_text()
+        # Almost stale: the run spent most of GENERATION_STALE_AFTER waiting in the queue.
+        Session.objects.filter(pk=self.session.pk).update(
+            status='processing', celery_task_id='run',
+            updated_at=timezone.now() - settings.GENERATION_STALE_AFTER + timedelta(seconds=1),
+        )
+        busy_during_first_answer = []
+
+        def slow_first_answer(**kwargs):
+            # The first answer outlives the time left before the run would look stale.
+            with patch('interviews.models.timezone.now', return_value=timezone.now() + timedelta(minutes=1)):
+                busy_during_first_answer.append(Session.objects.get(pk=self.session.pk).is_busy)
+            return ai_response('answer')
+
+        self.ai_client.models.generate_content.side_effect = slow_first_answer
+        generate_session_answers(self.session.pk, 'run')
+        self.assertTrue(busy_during_first_answer[0])
 
     def test_regeneration_preserves_user_answer(self):
         self.import_text()

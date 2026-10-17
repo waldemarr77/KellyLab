@@ -1,7 +1,8 @@
 import shutil
 import tempfile
 from datetime import timedelta
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import httpx
 from django.conf import settings
@@ -16,11 +17,16 @@ from users.models import CustomUser
 
 from .models import Export
 
-FAKE_FILE = b'%PDF-1.4 fake file'
+FAKE_FILES = {'pdf': b'%PDF-1.4 fake file', 'docx': b'PK fake file'}
+FAKE_FILE = FAKE_FILES['pdf']
 
 
 def exporter_response(status_code=200, content=FAKE_FILE):
-    return httpx.Response(status_code, content=content, request=httpx.Request('POST', 'http://exporter/export'))
+    """What httpx.stream() yields inside its with-block."""
+    response = httpx.Response(status_code, content=content, request=httpx.Request('POST', 'http://exporter/export'))
+    stream = MagicMock()
+    stream.__enter__.return_value = response
+    return stream
 
 
 @override_settings(CELERY_TASK_ALWAYS_EAGER=True, EXPORTER_URL='http://exporter')
@@ -28,13 +34,13 @@ class ExportTests(APITestCase):
     def setUp(self):
         cache.clear()  # Throttle counters would otherwise carry over between tests.
         # Keep generated files out of the real media folder.
-        media_root = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, media_root, ignore_errors=True)
-        media_settings = override_settings(MEDIA_ROOT=media_root)
+        self.media_root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.media_root, ignore_errors=True)
+        media_settings = override_settings(MEDIA_ROOT=self.media_root)
         media_settings.enable()
         self.addCleanup(media_settings.disable)
         # Mock only the HTTP call to the Exporter service; our task code runs for real.
-        exporter_patch = patch('exports.tasks.httpx.post', return_value=exporter_response())
+        exporter_patch = patch('exports.tasks.httpx.stream', return_value=exporter_response())
         self.exporter = exporter_patch.start()
         self.addCleanup(exporter_patch.stop)
         self.user = CustomUser.objects.create_user(username='owner', email='owner@example.com')
@@ -47,6 +53,7 @@ class ExportTests(APITestCase):
     def test_pdf_and_docx_are_created_and_downloaded(self):
         for export_format in ['pdf', 'docx']:
             with self.subTest(format=export_format):
+                self.exporter.return_value = exporter_response(content=FAKE_FILES[export_format])
                 created = self.client.post(self.url, {'format': export_format}, format='json')
                 self.assertEqual(created.status_code, 202)
                 self.assertEqual(created.data['status'], 'ready')
@@ -54,7 +61,7 @@ class ExportTests(APITestCase):
                 self.assertEqual(status.data['download_url'], created.data['download_url'])
                 downloaded = self.client.get(created.data['download_url'])
                 self.assertEqual(downloaded.status_code, 200)
-                self.assertEqual(b''.join(downloaded.streaming_content), FAKE_FILE)
+                self.assertEqual(b''.join(downloaded.streaming_content), FAKE_FILES[export_format])
                 self.assertIn(f'.{export_format}', downloaded['Content-Disposition'])
         sent = self.exporter.call_args.kwargs['json']
         self.assertEqual(sent['questions'], [{'order': 1, 'text': 'Що таке ORM?', 'answer': 'Відповідь'}])
@@ -146,8 +153,42 @@ class ExportTests(APITestCase):
         self.assertFalse(storage.exists(name))
         session = Session.objects.create(user=self.user, name='Second')
         Question.objects.create(session=session, text='Q', ai_answer='A')
+        self.exporter.return_value = exporter_response(content=FAKE_FILES['docx'])
         created = self.client.post(f'/api/sessions/{session.pk}/exports/', {'format': 'docx'}, format='json')
         name = Export.objects.get(pk=created.data['id']).file.name
         with self.captureOnCommitCallbacks(execute=True):
             self.user.delete()
         self.assertFalse(storage.exists(name))
+
+    def saved_files(self):
+        return [path for path in Path(self.media_root).rglob('*') if path.is_file()]
+
+    def test_reply_that_is_not_the_requested_file_marks_export_failed(self):
+        replies = {
+            'proxy error page': (b'<html>502 Bad Gateway</html>', 'pdf'),
+            'pdf instead of docx': (FAKE_FILES['pdf'], 'docx'),
+        }
+        for name, (content, export_format) in replies.items():
+            with self.subTest(name):
+                self.exporter.return_value = exporter_response(content=content)
+                created = self.client.post(self.url, {'format': export_format}, format='json')
+                self.assertEqual(created.data['status'], 'failed')
+        self.assertEqual(self.saved_files(), [])
+
+    @override_settings(EXPORT_MAX_BYTES=len(FAKE_FILE) - 1)
+    def test_oversized_reply_marks_export_failed(self):
+        created = self.client.post(self.url, {'format': 'pdf'}, format='json')
+        self.assertEqual(created.data['status'], 'failed')
+        self.assertEqual(self.saved_files(), [])
+
+    def test_deleting_session_during_export_leaves_no_file(self):
+        def delete_session(*args, **kwargs):
+            Session.objects.filter(pk=self.session.pk).delete()
+            return exporter_response()
+
+        self.exporter.side_effect = delete_session
+        # Eager mode: the task runs inside the request, so the response sees the export gone.
+        self.assertEqual(self.client.post(self.url, {'format': 'pdf'}, format='json').status_code, 404)
+        self.assertFalse(Export.objects.exists())
+        self.assertEqual(self.saved_files(), [])
+
