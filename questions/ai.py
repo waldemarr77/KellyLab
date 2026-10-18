@@ -1,4 +1,4 @@
-"""Generate interview answers through the Gemini API."""
+"""Calls to the Gemini API: interview answers here, practice tasks in practice/ai.py."""
 from contextlib import contextmanager
 
 from django.conf import settings
@@ -63,21 +63,29 @@ class IncompleteAIResponse(BadAIResponse):
             self.user_message = 'Відповідь AI обрізалась на ліміті довжини. Спробуй вужче питання.'
 
 
-def parse_answer(text):
+def parse_structured(schema, text):
+    """Validate the model's JSON reply against the schema it was asked to follow."""
     try:
-        parts = AnswerParts.model_validate_json(text)
+        return schema.model_validate_json(text)
     except ValidationError as exc:
         # Only the error type: the details quote the model's text.
         raise InvalidAIResponse('The model returned JSON that does not match the schema') from exc
-    parts = {key: value.strip() for key, value in parts.model_dump().items()}
+
+
+def parse_answer(text):
+    parts = {key: value.strip() for key, value in parse_structured(AnswerParts, text).model_dump().items()}
     if not parts['explanation'] or not parts['interview_answer']:
         raise EmptyAIResponse('The model returned an empty response')
     return parts
 
 
+def user_context(position, level):
+    return f'Посада: {position or "не вказана"}\nРівень: {level or "не вказаний"}'
+
+
 @contextmanager
-def answer_generator(position, level):
-    """Yield generate(question) -> dict of AnswerParts fields, reusing one Gemini client for the whole session."""
+def gemini_generator(system_instruction, schema):
+    """Yield ask(contents) -> reply text in the schema's JSON, reusing one Gemini client for many calls."""
     if not settings.GEMINI_API_KEY or not settings.GEMINI_MODEL:
         raise ImproperlyConfigured('GEMINI_API_KEY and GEMINI_MODEL are required')
 
@@ -86,33 +94,36 @@ def answer_generator(position, level):
 
     # Thinking models spend output tokens on reasoning too, so the limit leaves room for both.
     config = types.GenerateContentConfig(
-        system_instruction=SYSTEM_INSTRUCTION,
+        system_instruction=system_instruction,
         max_output_tokens=settings.AI_MAX_OUTPUT_TOKENS,
         thinking_config=(
             None if settings.AI_THINKING_BUDGET is None
             else types.ThinkingConfig(thinking_budget=settings.AI_THINKING_BUDGET)
         ),
         response_mime_type='application/json',
-        response_schema=AnswerParts,
+        response_schema=schema,
     )
-    context = f'Посада: {position or "не вказана"}\nРівень: {level or "не вказаний"}'
 
     with genai.Client(
         api_key=settings.GEMINI_API_KEY,
         http_options=types.HttpOptions(timeout=60000),
     ) as client:
-        def generate(question):
-            response = client.models.generate_content(
-                model=settings.GEMINI_MODEL,
-                contents=f'{context}\nПитання: {question}',
-                config=config,
-            )
+        def ask(contents):
+            response = client.models.generate_content(model=settings.GEMINI_MODEL, contents=contents, config=config)
             # Anything but STOP means the text is cut off or blocked, even if some text came back.
             finish_reason = response.candidates[0].finish_reason if response.candidates else None
             if finish_reason is not None and finish_reason != types.FinishReason.STOP:
                 raise IncompleteAIResponse(getattr(finish_reason, 'name', str(finish_reason)))
             if not response.text or not response.text.strip():
                 raise EmptyAIResponse('The model returned an empty response')
-            return parse_answer(response.text)
+            return response.text
 
-        yield generate
+        yield ask
+
+
+@contextmanager
+def answer_generator(position, level):
+    """Yield generate(question) -> dict of AnswerParts fields, reusing one Gemini client for the whole session."""
+    context = user_context(position, level)
+    with gemini_generator(SYSTEM_INSTRUCTION, AnswerParts) as ask:
+        yield lambda question: parse_answer(ask(f'{context}\nПитання: {question}'))

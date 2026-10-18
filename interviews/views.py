@@ -244,7 +244,10 @@ class SessionViewSet(viewsets.ModelViewSet):
             export.error_message = 'Черга недоступна. Перевір Redis та Celery.'
             export.save(update_fields=['status', 'error_message', 'updated_at'])
             return Response({'detail': 'Не вдалося передати задачу в чергу.'}, status=503)
-        export.refresh_from_db()
+        export = Export.objects.filter(pk=export.pk).first()
+        if export is None:
+            # The session was deleted while an eagerly run task was making the file.
+            raise Http404
         return Response(ExportSerializer(export, context={'request': request}).data, status=status.HTTP_202_ACCEPTED)
 
     @swagger_auto_schema(method='get', responses={200: ExportSerializer})

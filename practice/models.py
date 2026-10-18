@@ -1,7 +1,14 @@
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import models
+from django.utils import timezone
 
 from questions.models import Question
+
+# The runner accepts up to 50 tests per run.
+MAX_TEST_CASES = 50
+# Languages the runner can execute; other tasks are listed but cannot be submitted.
+SUPPORTED_LANGUAGES = {'python'}
 
 
 class PracticeStatus(models.TextChoices):
@@ -9,6 +16,10 @@ class PracticeStatus(models.TextChoices):
     FAILED = 'failed', 'Провалено'
     PARTIAL = 'partial', 'Частково правильно виконано'
     SUCCESS = 'success', 'Успішно'
+    CHECKING = 'checking', 'Перевіряється'
+    GENERATING = 'generating', 'Генерується'
+    # The code was not checked (runner or queue unavailable); not the user's mistake.
+    ERROR = 'error', 'Помилка перевірки'
 
 
 class Difficulty(models.TextChoices):
@@ -26,11 +37,13 @@ class QuestionPractice(models.Model):
         related_name='practices',
         verbose_name='Питання',
     )
+    # Empty while the task is being generated.
     title = models.CharField(
         max_length=255,
+        blank=True,
         verbose_name='Назва завдання'
     )
-    description = models.TextField(verbose_name='Умова завдання')
+    description = models.TextField(blank=True, verbose_name='Умова завдання')
     difficulty = models.CharField(
         max_length=10,
         choices=Difficulty.choices,
@@ -51,6 +64,8 @@ class QuestionPractice(models.Model):
         blank=True,
         verbose_name='Пояснення оцінки'
     )
+    # Why the last generation or review did not happen; the review itself goes to feedback.
+    error_message = models.TextField(blank=True, verbose_name='Пояснення помилки')
     created_at = models.DateTimeField(
         auto_now_add=True,
         verbose_name='Створено'
@@ -66,7 +81,15 @@ class QuestionPractice(models.Model):
         verbose_name_plural = 'Практики до питань'
 
     def __str__(self):
-        return self.title[:30]
+        return self.title[:30] or f'Практика {self.pk}'
+
+    @property
+    def is_busy(self):
+        """Generation or review is running; like a session run, a silent one is considered dead."""
+        return (
+            self.status in (PracticeStatus.GENERATING, PracticeStatus.CHECKING)
+            and self.updated_at > timezone.now() - settings.GENERATION_STALE_AFTER
+        )
 
 
 class CodingTask(models.Model):
@@ -91,7 +114,11 @@ class CodingTask(models.Model):
         default=list,
         blank=True,
         verbose_name='Перевірочні приклади',
-        help_text='Список об’єктів із input та expected_output; формат визначає перевіряльник.',
+        help_text=(
+            'Список об’єктів {"input": "...", "expected_output": "...", "hidden": false}: '
+            'input подається в stdin, вивід у stdout порівнюється з expected_output. '
+            'Приховані тести (hidden: true) користувач не бачить.'
+        ),
     )
     created_at = models.DateTimeField(
         auto_now_add=True,
@@ -109,6 +136,27 @@ class CodingTask(models.Model):
 
     def __str__(self):
         return self.title[:30]
+
+    def clean(self):
+        super().clean()
+        if not isinstance(self.test_cases, list) or not 1 <= len(self.test_cases) <= MAX_TEST_CASES:
+            raise ValidationError({'test_cases': f'Потрібно від 1 до {MAX_TEST_CASES} тестів.'})
+        for number, case in enumerate(self.test_cases, start=1):
+            valid = (
+                isinstance(case, dict)
+                and set(case) <= {'input', 'expected_output', 'hidden'}
+                and isinstance(case.get('input', ''), str)
+                and isinstance(case.get('expected_output'), str)
+                and isinstance(case.get('hidden', False), bool)
+            )
+            if not valid:
+                raise ValidationError({
+                    'test_cases': f'Тест {number}: потрібні рядки input і expected_output, hidden — true/false.',
+                })
+
+    @property
+    def public_test_cases(self):
+        return [case for case in self.test_cases if not case.get('hidden', False)]
 
 
 class CodingAttempt(models.Model):
@@ -140,6 +188,10 @@ class CodingAttempt(models.Model):
         blank=True,
         verbose_name='Пояснення оцінки'
     )
+    passed_tests = models.PositiveSmallIntegerField(default=0, verbose_name='Пройдено тестів')
+    total_tests = models.PositiveSmallIntegerField(default=0, verbose_name='Усього тестів')
+    # One entry per test; hidden tests keep only whether they passed.
+    results = models.JSONField(default=list, blank=True, verbose_name='Результати тестів')
     created_at = models.DateTimeField(
         auto_now_add=True,
         verbose_name='Створено'

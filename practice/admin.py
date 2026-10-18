@@ -32,7 +32,7 @@ class QuestionPracticeAdmin(admin.ModelAdmin):
             'fields': ('question', 'title', 'description', 'difficulty'),
         }),
         ('Рішення', {
-            'fields': ('status', 'user_solution', 'feedback'),
+            'fields': ('status', 'user_solution', 'feedback', 'error_message'),
         }),
         ('Дати', {
             'fields': ('created_at', 'updated_at'),
@@ -86,7 +86,8 @@ class CodingAttemptAdmin(admin.ModelAdmin):
     ]
     list_select_related = ['task', 'user']
     raw_id_fields = ['task', 'user']
-    readonly_fields = ['created_at', 'updated_at']
+    # Filled by the check; editing them by hand would contradict the code.
+    readonly_fields = ['passed_tests', 'total_tests', 'results', 'created_at', 'updated_at']
     ordering = ['-created_at', '-pk']
     date_hierarchy = 'created_at'
 
@@ -95,7 +96,7 @@ class CodingAttemptAdmin(admin.ModelAdmin):
             'fields': ('task', 'user', 'status'),
         }),
         ('Рішення', {
-            'fields': ('user_solution', 'feedback'),
+            'fields': ('user_solution', 'feedback', 'passed_tests', 'total_tests', 'results'),
         }),
         ('Дати', {
             'fields': ('created_at', 'updated_at'),

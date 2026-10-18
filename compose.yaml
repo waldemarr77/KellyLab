@@ -1,3 +1,5 @@
+# Local development. For production add compose.prod.yaml:
+#   docker compose -f compose.yaml -f compose.prod.yaml up -d --build
 x-app: &app
   build: .
   # Every setting from .env reaches the containers; `environment` below overrides
@@ -57,6 +59,13 @@ services:
     <<: *app
     ports:
       - "127.0.0.1:8000:8000"
+    # The slim image has no curl; urlopen raises on 503, so the check fails when the database or Redis is down.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
     # The worker writes export files and web serves them, so both share one volume.
     volumes:
       - media:/app/media
@@ -69,6 +78,13 @@ services:
   worker:
     <<: *app
     command: celery -A config worker -Q celery --loglevel=info --concurrency=2
+    # The worker answers a ping through Redis only while it is alive and consuming its queue.
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A config inspect ping -d celery@$$HOSTNAME --timeout 10"]
+      interval: 60s
+      timeout: 20s
+      retries: 3
+      start_period: 30s
     volumes:
       - media:/app/media
     depends_on:
@@ -80,6 +96,22 @@ services:
   worker-ai:
     <<: *app
     command: celery -A config worker -Q ai --loglevel=info --concurrency=1 --prefetch-multiplier=1 -n ai@%h
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A config inspect ping -d ai@$$HOSTNAME --timeout 10"]
+      interval: 60s
+      timeout: 20s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  # Sends the daily cleanup tasks to the `celery` queue; run exactly one.
+  beat:
+    <<: *app
+    command: celery -A config beat --loglevel=info --schedule /tmp/celerybeat-schedule
     depends_on:
       migrate:
         condition: service_completed_successfully

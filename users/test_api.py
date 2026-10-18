@@ -1,16 +1,20 @@
 import re
+from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core import mail
 from django.core.cache import cache
 from django.test import TestCase, override_settings
+from django.utils import timezone
 from rest_framework.test import APITestCase
+from rest_framework_simplejwt.token_blacklist.models import OutstandingToken
 
 from interviews.models import AIUsage, Session
 from questions.models import Question
 
 from .models import CustomUser
+from .tasks import flush_expired_tokens
 
 
 class AuthenticationTests(APITestCase):
@@ -183,6 +187,39 @@ class LoginLimitTests(APITestCase):
             self.client.post('/admin/login/', {'username': f'user{i}@example.com', 'password': 'wrong'})
         self.assertEqual(self.client.post('/api/auth/token/', self.credentials).status_code, 429)
         self.assertEqual(self.client.post('/api/auth/token/', wrong, REMOTE_ADDR='198.51.100.1').status_code, 401)
+
+
+class EmailCaseTests(TestCase):
+    password = 'Admin-password-913!'
+
+    def setUp(self):
+        cache.clear()
+
+    def test_mixed_case_email_is_stored_lowercase_and_can_log_in(self):
+        get_user_model().objects.create_superuser(username='admin', email=' Admin@Example.com', password=self.password)
+        self.assertTrue(CustomUser.objects.filter(email='admin@example.com').exists())
+        token = self.client.post('/api/auth/token/', {'email': 'Admin@Example.com', 'password': self.password})
+        self.assertEqual(token.status_code, 200)
+        admin_login = self.client.post('/admin/login/?next=/admin/', {'username': 'ADMIN@example.com', 'password': self.password})
+        self.assertEqual(admin_login.status_code, 302)
+
+    def test_admin_add_form_lowercases_email(self):
+        admin = get_user_model().objects.create_superuser(username='admin', email='admin@example.com', password=self.password)
+        self.client.force_login(admin)
+        self.client.post('/admin/users/customuser/add/', {
+            'email': 'New@Example.com', 'username': 'new', 'usable_password': 'true',
+            'password1': 'New-user-password-482!', 'password2': 'New-user-password-482!',
+        })
+        self.assertTrue(CustomUser.objects.filter(email='new@example.com').exists())
+
+
+class TokenCleanupTests(TestCase):
+    def test_expired_tokens_are_flushed(self):
+        user = CustomUser.objects.create_user(username='u', email='u@example.com')
+        OutstandingToken.objects.create(user=user, jti='old', token='t', expires_at=timezone.now() - timedelta(days=1))
+        OutstandingToken.objects.create(user=user, jti='new', token='t', expires_at=timezone.now() + timedelta(days=1))
+        flush_expired_tokens()
+        self.assertEqual(list(OutstandingToken.objects.values_list('jti', flat=True)), ['new'])
 
 
 class AdminLoginLimitTests(TestCase):

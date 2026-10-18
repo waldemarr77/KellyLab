@@ -1,0 +1,38 @@
+# Production override: docker compose -f compose.yaml -f compose.prod.yaml up -d --build
+# Secrets and hosts must come from the shell or .env; without them compose refuses to start
+# instead of falling back to the local development values from compose.yaml.
+x-prod: &prod
+  restart: unless-stopped
+  environment:
+    SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY}
+    DEBUG: "false"
+    # The healthcheck calls 127.0.0.1 from inside the container, so the local names stay allowed.
+    ALLOWED_HOSTS: ${ALLOWED_HOSTS:?set ALLOWED_HOSTS},localhost,127.0.0.1
+    DB_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD}
+    # Verification and password reset letters; without SMTP they would only be printed to the log.
+    EMAIL_HOST: ${EMAIL_HOST:?set EMAIL_HOST}
+
+services:
+  db:
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD}
+
+  redis:
+    restart: unless-stopped
+
+  migrate:
+    <<: *prod
+    restart: "no"
+
+  web:
+    <<: *prod
+
+  worker:
+    <<: *prod
+
+  worker-ai:
+    <<: *prod
+
+  beat:
+    <<: *prod

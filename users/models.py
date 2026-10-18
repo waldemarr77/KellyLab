@@ -1,5 +1,12 @@
-from django.contrib.auth.models import AbstractUser
+from django.contrib.auth.models import AbstractUser, UserManager
 from django.db import models
+
+
+class CustomUserManager(UserManager):
+    @classmethod
+    def normalize_email(cls, email):
+        # Login lowercases the email, so it is stored the same way: admin, createsuperuser and the API alike.
+        return (email or '').strip().lower()
 
 
 class CustomUser(AbstractUser):
@@ -22,6 +29,8 @@ class CustomUser(AbstractUser):
     USERNAME_FIELD = "email"
     # username is a generated technical value; email is the login.
     REQUIRED_FIELDS = ["username"]
+
+    objects = CustomUserManager()
 
     class Meta:
         ordering = ['-date_joined']

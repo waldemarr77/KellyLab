@@ -28,6 +28,27 @@ if not SECRET_KEY:
     SECRET_KEY = 'local-development-only-change-before-deployment'
 
 ALLOWED_HOSTS = env_list('ALLOWED_HOSTS', 'localhost,127.0.0.1')
+CSRF_TRUSTED_ORIGINS = env_list('CSRF_TRUSTED_ORIGINS')
+# Number of reverse proxies in front of Django (nginx, load balancer); 0 = direct connections.
+NUM_PROXIES = int(os.getenv('NUM_PROXIES', '0'))
+
+# HTTPS only, on by default outside development. USE_HTTPS=false is for runs without TLS (CI tests).
+# An empty value (as in .env.example) keeps the default instead of turning HTTPS off.
+USE_HTTPS = (os.getenv('USE_HTTPS') or str(not DEBUG)).lower() == 'true'
+SECURE_SSL_REDIRECT = USE_HTTPS
+# Docker's healthcheck calls plain http inside the container.
+SECURE_REDIRECT_EXEMPT = [r'^api/health/$']
+SESSION_COOKIE_SECURE = USE_HTTPS
+CSRF_COOKIE_SECURE = USE_HTTPS
+# Browsers remember it for this long, so start small and raise to a year once HTTPS works.
+SECURE_HSTS_SECONDS = int(os.getenv('SECURE_HSTS_SECONDS', '3600')) if USE_HTTPS else 0
+SECURE_HSTS_INCLUDE_SUBDOMAINS = env_bool('SECURE_HSTS_INCLUDE_SUBDOMAINS', 'true')
+if NUM_PROXIES:
+    # TLS ends at the proxy; it must set this header itself and drop the client's copy.
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+# HSTS preload puts the domain into browsers' built-in lists and is hard to undo, so it stays a
+# deliberate choice outside this config.
+SILENCED_SYSTEM_CHECKS = ['security.W021']
 
 
 INSTALLED_APPS = [
@@ -53,6 +74,8 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    # Serves the admin's static files from gunicorn, without a separate web server.
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -82,10 +105,14 @@ REST_FRAMEWORK = {
         # Creating sessions and importing questions; both only grow the database.
         'session_write': os.getenv('SESSION_WRITE_THROTTLE_RATE', '60/hour'),
         'verification_email': os.getenv('VERIFICATION_EMAIL_THROTTLE_RATE', '3/hour'),
+        # Every attempt runs the code once per test case in the runner.
+        'code_run': os.getenv('CODE_RUN_THROTTLE_RATE', '10/minute'),
+        # Generating a practice task or reviewing a solution; each also costs one question of the AI quota.
+        'practice': os.getenv('PRACTICE_THROTTLE_RATE', '10/minute'),
     },
-    # Number of reverse proxies in front of Django. With 0 the client is REMOTE_ADDR and
-    # X-Forwarded-For is ignored; otherwise only the addresses appended by our proxies count.
-    'NUM_PROXIES': int(os.getenv('NUM_PROXIES', '0')),
+    # With 0 the client is REMOTE_ADDR and X-Forwarded-For is ignored;
+    # otherwise only the addresses appended by our proxies count.
+    'NUM_PROXIES': NUM_PROXIES,
 }
 
 # Each refresh returns a new refresh token and blacklists the old one, so a stolen
@@ -153,9 +180,19 @@ CELERY_TASK_PUBLISH_RETRY = False
 # Re-deliver a task if the worker dies mid-run instead of losing it.
 CELERY_TASK_ACKS_LATE = True
 CELERY_TASK_REJECT_ON_WORKER_LOST = True
-# Gemini's rate limit is per key and the pause between requests is kept per task,
-# so generation runs in its own queue served by a single worker process.
-CELERY_TASK_ROUTES = {'questions.tasks.generate_session_answers': {'queue': 'ai'}}
+# Gemini's rate limit is per key, so every task that calls it runs in its own queue served by
+# a single worker process; the pause between requests is shared through the cache.
+CELERY_TASK_ROUTES = {
+    'questions.tasks.generate_session_answers': {'queue': 'ai'},
+    'practice.tasks.generate_practice': {'queue': 'ai'},
+    'practice.tasks.review_solution': {'queue': 'ai'},
+}
+# Daily cleanup, run by `celery beat` (the `beat` service in compose.yaml).
+CELERY_BEAT_SCHEDULE = {
+    'delete-old-exports': {'task': 'exports.tasks.delete_old_exports', 'schedule': timedelta(days=1)},
+    'delete-old-ai-usage': {'task': 'interviews.tasks.delete_old_ai_usage', 'schedule': timedelta(days=1)},
+    'flush-expired-tokens': {'task': 'users.tasks.flush_expired_tokens', 'schedule': timedelta(days=1)},
+}
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
 GEMINI_MODEL = os.getenv('GEMINI_MODEL', '')
 AI_MAX_ATTEMPTS = 3
@@ -175,6 +212,8 @@ AI_DAILY_QUESTION_LIMIT = int(os.getenv('AI_DAILY_QUESTION_LIMIT', '100'))
 AI_GLOBAL_DAILY_QUESTION_LIMIT = int(os.getenv('AI_GLOBAL_DAILY_QUESTION_LIMIT', '400'))
 # Gemini resets daily quotas at midnight Pacific time, not UTC.
 GEMINI_QUOTA_TIMEZONE = ZoneInfo('America/Los_Angeles')
+# Quotas only read today's counters; older ones are kept a while for the admin, then deleted.
+AI_USAGE_KEEP_FOR = timedelta(days=30)
 # A processing session without saved progress for this long is treated as stuck
 # and can be regenerated or deleted. Must exceed the worst case for one question.
 GENERATION_STALE_AFTER = timedelta(minutes=10)
@@ -192,9 +231,39 @@ MEDIA_ROOT = BASE_DIR / 'media'
 MEDIA_URL = 'media/'
 EXPORTER_URL = os.getenv('EXPORTER_URL', 'http://127.0.0.1:8002')
 EXPORTER_TIMEOUT_SECONDS = 60
+# A session holds up to 50 questions; a larger reply from the Exporter is not a real export.
+EXPORT_MAX_BYTES = 20 * 1024 * 1024
 # Longer than the export task's time limit (6 min): an older pending/processing export is dead.
 EXPORT_STALE_AFTER = timedelta(minutes=10)
+# Older exports are deleted with their files; a new one is made from the current session on request.
+EXPORT_KEEP_FOR = timedelta(days=7)
 FILE_UPLOAD_MAX_MEMORY_SIZE = 1024 * 1024
+# Runner service: executes submitted code in isolation. Reachable only by the worker.
+RUNNER_URL = os.getenv('RUNNER_URL', 'http://127.0.0.1:8003')
+# Seconds per test case; the runner runs up to 50 of them one by one.
+CODE_TIME_LIMIT_SECONDS = 2
+RUNNER_TIMEOUT_SECONDS = 50 * (CODE_TIME_LIMIT_SECONDS + 2)
+MAX_SOLUTION_LENGTH = 20_000
+# Longer than the check task's time limit: an older 'checking' attempt is dead and does not block new ones.
+CODE_CHECK_STALE_AFTER = timedelta(minutes=10)
+
+
+# Everything goes to stdout, where `docker compose logs` reads it. Celery workers keep their own
+# handler with the task name, so task logs end up in the worker's output.
+LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {'plain': {'format': '{asctime} {levelname} {name}: {message}', 'style': '{'}},
+    'handlers': {'console': {'class': 'logging.StreamHandler', 'stream': 'ext://sys.stdout', 'formatter': 'plain'}},
+    'root': {'handlers': ['console'], 'level': LOG_LEVEL},
+    'loggers': {
+        # Django's own config also prints to the console under DEBUG; one handler is enough.
+        'django': {'handlers': ['console'], 'level': LOG_LEVEL, 'propagate': False},
+        # One INFO line per HTTP request to Gemini and the Exporter is noise.
+        'httpx': {'level': 'WARNING'},
+    },
+}
 
 
 AUTH_PASSWORD_VALIDATORS = [
@@ -220,6 +289,13 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = 'static/'
+# Filled by `collectstatic` when the Docker image is built.
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+STORAGES = {
+    'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},
+    # Compressed files with a content hash in the name, so browsers may cache them for good.
+    'staticfiles': {'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage'},
+}
 
 # Without EMAIL_HOST letters are printed to the console (local development).
 # Lowercase name: Django forbids the old EMAIL_* settings next to MAILERS.

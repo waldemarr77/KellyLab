@@ -14,7 +14,7 @@ Backend для підготовки до технічних співбесід. 
 - TXT-експорт одразу у відповіді; PDF/DOCX — фоновою Celery-задачею через окремий Exporter service.
 - Swagger, інтеграційні тести й CI з PostgreSQL.
 
-Це API-MVP. React, parser колеги, AI-практика, перевірка коду, pgvector та Llama fallback ще не підключені. Модель `practice` залишається заготовкою. Exporter service розробляється окремо (гілка `feature/fastapi-exporter`); без нього PDF/DOCX-експорт завершується `failed`. TXT-експорт формується одразу без запису `Export`. LangChain/LangGraph поки не потрібні для одного виклику моделі.
+Це API-MVP. React, parser колеги, pgvector та Llama fallback ще не підключені. AI-практика до питань працює; API задач із коду є, але сервіс runner, що виконує код, ще не доданий, тож спроби завершуються `error`. Exporter service розробляється окремо (гілка `feature/fastapi-exporter`); без нього PDF/DOCX-експорт завершується `failed`. TXT-експорт формується одразу без запису `Export`. LangChain/LangGraph поки не потрібні для одного виклику моделі.
 
 ## Локальний запуск у PowerShell
 
@@ -27,9 +27,15 @@ $env:CELERY_TASK_ALWAYS_EAGER = 'true'
 .\venv\Scripts\python.exe manage.py runserver
 ```
 
-Існуючий `.env` не змінювався. Змінні поточного процесу мають пріоритет. На чистій машині потрібен Python 3.13: `python -m venv venv`, потім `.\venv\Scripts\python.exe -m pip install -r requirements-dev.txt`. Скопіюй `.env.example` у `.env`, лише якщо власного `.env` ще немає. `requirements.txt` містить залежності застосунку, `requirements-dev.txt` додає інструменти розробки (ruff).
+Існуючий `.env` не змінювався. Змінні поточного процесу мають пріоритет. На чистій машині потрібен Python 3.13: `python -m venv venv`, потім `.\venv\Scripts\python.exe -m pip install -r requirements-dev.txt`. Скопіюй `.env.example` у `.env`, лише якщо власного `.env` ще немає. Прямі залежності записані в `requirements.in` і `requirements-dev.in`; `requirements.txt` і `requirements-dev.txt` — згенеровані з них lock-файли з точними версіями всіх пакетів, тож локально, у Docker і CI ставиться одне й те саме. Lock-файли не редагуй руками: зміни `.in` і перегенеруй обидва під Linux, як у Docker і CI:
 
-Відкрий http://127.0.0.1:8000/api/docs/. У Swagger після отримання JWT натисни **Authorize** і введи `Bearer <access>`.
+```powershell
+docker run --rm -v ${PWD}:/src -w /src python:3.13-slim sh -c "pip install -q pip-tools && pip-compile -q --strip-extras --no-emit-index-url -o requirements.txt requirements.in && pip-compile -q --strip-extras --no-emit-index-url -o requirements-dev.txt requirements-dev.in"
+```
+
+Щоб оновити версії, додай `--upgrade`. CI перевіряє `requirements.txt` через `pip-audit`, а Dependabot щотижня пропонує PR з оновленнями пакетів і GitHub Actions.
+
+Відкрий http://127.0.0.1:8000/api/docs/. У Swagger після отримання JWT натисни **Authorize** і введи `Bearer <access>`. Swagger і `/api/schema/` відкриті лише при `DEBUG=true`; у production їх бачить тільки staff, який увійшов в адмінку.
 
 В іншому PowerShell можна запустити весь сценарій:
 
@@ -45,7 +51,21 @@ $env:CELERY_TASK_ALWAYS_EAGER = 'true'
 docker compose --env-file .env up --build
 ```
 
-Міграції виконує окремий сервіс перед стартом web/worker. API: http://127.0.0.1:8000/api/docs/. PostgreSQL і файли експорту (`media/`) зберігаються в named volumes `postgres_data` і `media`; `media` спільний для `web` (віддає файл) і `worker` (записує його). `docker compose down` зупиняє сервіси, зберігаючи дані; `docker compose down -v` видаляє і їх. Це конфігурація для локальної розробки, з Django development server.
+Міграції виконує окремий сервіс перед стартом web/worker. API: http://127.0.0.1:8000/api/docs/. `GET /api/health/` без авторизації перевіряє БД і, якщо задано `CACHE_URL`, Redis-кеш: 200, коли все працює, інакше 503 з тим, що саме впало; Docker використовує його як healthcheck для `web`; `worker` і `worker-ai` перевіряються через `celery inspect ping`. Логи Django і Celery йдуть у stdout (`docker compose logs`), рівень задає `LOG_LEVEL` (типово `INFO`). PostgreSQL і файли експорту (`media/`) зберігаються в named volumes `postgres_data` і `media`; `media` спільний для `web` (віддає файл) і `worker` (записує його). Сервіс `beat` раз на добу запускає очищення: експорти, старші 7 днів (`EXPORT_KEEP_FOR`), видаляються разом із файлами; лічильники AI-квоти, старші 30 днів (`AI_USAGE_KEEP_FOR`), теж видаляються, а `flushexpiredtokens` прибирає прострочені JWT з blacklist. `beat` має бути один. `docker compose down` зупиняє сервіси, зберігаючи дані; `docker compose down -v` видаляє і їх. Образ запускає Django через gunicorn (кількість процесів — `WEB_CONCURRENCY`) від користувача `app`, а статику адмінки віддає whitenoise: `collectstatic` виконується під час збірки.
+
+Якщо volume `media` створено ще до переходу на користувача `app`, воркер не зможе записати експорт. Один раз виправ власника (або видали volume, якщо старі експорти не потрібні):
+
+```powershell
+docker compose run --rm -u root worker chown -R app:app /app/media
+```
+
+Для production додай override `compose.prod.yaml`: `DEBUG=false`, `restart: unless-stopped`, а `SECRET_KEY`, `ALLOWED_HOSTS` і `DB_PASSWORD` обов'язкові (без них compose не стартує):
+
+```powershell
+docker compose -f compose.yaml -f compose.prod.yaml up -d --build
+```
+
+Обов'язковий також `EMAIL_HOST` (SMTP для листів підтвердження й скидання пароля). Сам TLS і reverse proxy перед `web` цей файл не налаштовує, але Django готовий до них: з `DEBUG=false` за замовчуванням увімкнено `USE_HTTPS` — редирект http→https (крім `/api/health/`, який Docker перевіряє по http), cookies лише через https і HSTS на `SECURE_HSTS_SECONDS` (типово 1 година; коли https перевірено, постав `31536000`). За proxy задай `NUM_PROXIES`: тоді Django вірить заголовку `X-Forwarded-Proto`, тож proxy має сам його ставити. HSTS preload не вмикається (попередження `security.W021` вимкнено): це рішення важко скасувати. Перевірка перед деплоєм: `docker compose -f compose.yaml -f compose.prod.yaml run --rm web python manage.py check --deploy`.
 
 Усі змінні з `.env` потрапляють у контейнери (`env_file`), тож ліміти, `CORS_ALLOWED_ORIGINS` тощо діють і в Docker. Винятки — адреси БД, Redis, кешу, Exporter і `USE_SQLITE`/`CELERY_TASK_ALWAYS_EAGER`: `compose.yaml` задає їх сам, бо значення з локального `.env` (`127.0.0.1`) у контейнері не працюють. Після зміни `.env` перезапусти сервіси: `docker compose up -d`.
 
@@ -60,9 +80,9 @@ GEMINI_API_KEY=your-key
 GEMINI_MODEL=model-id-available-to-your-account
 ```
 
-Перезапусти Django і worker; у Docker використай `docker compose --env-file .env up --build` із власними значеннями. Якщо секрет містить `$`, у dotenv візьми його в одинарні лапки, щоб Compose не сприйняв частину секрету як змінну. ID моделі задається явно, оскільки доступність залежить від акаунта. Питання, посада та рівень надсилаються в API Google; запити можуть бути платними. SDK використовується за [офіційною документацією Google](https://googleapis.github.io/python-genai/).
+Перезапусти Django і worker; у Docker використай `docker compose --env-file .env up --build` із власними значеннями. Якщо секрет містить `$`, у dotenv візьми його в одинарні лапки, щоб Compose не сприйняв частину секрету як змінну. ID моделі задається явно, оскільки доступність залежить від акаунта. Питання, посада та рівень надсилаються в API Google; запити можуть бути платними. На free tier Google може використовувати надіслані дані для покращення своїх продуктів, тому перед реальним запуском потрібен платний tier або попередження для користувачів у фронтенді. SDK використовується за [офіційною документацією Google](https://googleapis.github.io/python-genai/).
 
-Для фонового режиму поза Docker потрібні Redis і `CELERY_TASK_ALWAYS_EAGER=false`; worker: `celery -A config worker -Q celery,ai --concurrency=1 --prefetch-multiplier=1 --loglevel=info` у Linux/WSL (без `-Q celery,ai` генерація зависне в `processing`). Для локального запуску на Windows простіше eager або Docker. Eager блокує HTTP-запит до завершення генерації, але теж звертається до справжнього Gemini.
+Для фонового режиму поза Docker потрібні Redis і `CELERY_TASK_ALWAYS_EAGER=false`; worker: `celery -A config worker -Q celery,ai --concurrency=1 --prefetch-multiplier=1 --loglevel=info` у Linux/WSL, а для щоденного очищення ще `celery -A config beat --loglevel=info` (без `-Q celery,ai` генерація зависне в `processing`). Для локального запуску на Windows простіше eager або Docker. Eager блокує HTTP-запит до завершення генерації, але теж звертається до справжнього Gemini.
 
 ## API
 
@@ -71,6 +91,8 @@ GEMINI_MODEL=model-id-available-to-your-account
 Access діє 15 хвилин, refresh — 7 днів. Кожен виклик `token/refresh/` повертає новий refresh, а старий одразу відкликається, тому зберігай новий. Якщо refresh не використовувати 7 днів, потрібен повторний вхід. Після `logout/` refresh більше не працює, але вже виданий access діє до кінця своїх 15 хвилин. Прострочені записи blacklist прибирає `python manage.py flushexpiredtokens`.
 
 Генерація має два ліміти на користувача, обидва з `.env`. `GENERATE_THROTTLE_RATE` (типово `2/minute`) обмежує частоту запусків `generate/`. `AI_DAILY_QUESTION_LIMIT` (типово 100) — скільки питань за добу можна надіслати в Gemini; квота списується при запуску, а питання, які так і не потрапили в Gemini (черга недоступна, запуск зупинився на помилці), повертаються; оновлюється о 00:00 UTC. Крім того, `AI_GLOBAL_DAILY_QUESTION_LIMIT` (типово 400) обмежує питання від усього сервісу, бо ключ Gemini спільний і має 500 запитів на добу (повтори після помилок теж списуються, тому ліміт нижчий). Він оновлюється опівночі за тихоокеанським часом, як і квота Google, тобто о 07:00/08:00 UTC. В усіх випадках API повертає `429`, а сесія не переходить у `processing`. Лічильники видно в адмінці, розділи «Лічильники» і «Загальні лічильники»; там же квоту можна скинути.
+
+AI-практика до питання: `POST /api/questions/{id}/practices/` (необов'язково `{"difficulty": "easy|medium|hard"}`; без неї складність обирає AI за рівнем користувача) створює практику й генерує завдання у фоні. Практики своїх питань — `GET /api/practices/?question={id}` і `GET`/`DELETE /api/practices/{id}/`. Рішення надсилається в `POST /api/practices/{id}/solution/` з `{"code": "..."}`: код не виконується, AI читає його й ставить `status` `success`, `partial` або `failed` з поясненням у `feedback`. Статуси практики: `generating` → `not_started` → `checking` → результат; при збої — `error` з причиною в `error_message`, і квота повертається, якщо запит не дійшов до Gemini. Поки практика генерується чи перевіряється, нове рішення дає `409`. Кожна генерація й оцінка — один запит до Gemini: потрібна підтверджена пошта, списується одне питання з денних квот, а частоту обмежує `PRACTICE_THROTTLE_RATE` (типово `10/minute`, окремо від генерації сесій). Задачі практики йдуть у ту саму чергу `ai`, а пауза `AI_MIN_INTERVAL_SECONDS` тепер спільна для всіх задач через кеш, тож практика одразу після генерації сесії теж чекає своєї черги.
 
 Генерація доступна лише після підтвердження пошти, інакше `generate/` повертає `403`: реєстрація відкрита, і без цього кілька нових акаунтів вичерпали б спільну квоту. Після реєстрації приходить лист із посиланням `EMAIL_VERIFICATION_URL` (сторінка фронтенду, яка надсилає `uid` і `token` на `verify-email/`). Без `EMAIL_HOST` листи друкуються в консоль `web`; для справжньої пошти задай `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, `DEFAULT_FROM_EMAIL`. Акаунти, створені до появи підтвердження, міграція позначає підтвердженими; вручну статус змінюється в адмінці. `register/` відповідає однаково (`202`) і для нової, і для зайнятої пошти, а власник зайнятої отримує лист, тож перевірити існування акаунта через API не вийде.
 
@@ -114,7 +136,7 @@ Gemini відповідає JSON за схемою (structured output), і ка�
 
 Якщо Gemini не дав придатної відповіді на окреме питання (порожня відповідь, блок безпеки, обрізання на ліміті токенів), генерація переходить до наступного: таке питання отримує текст причини в `ai_error`, попередня відповідь, якщо була, залишається, а сесія завершується як `ready` з `error_message` «Не вдалося згенерувати відповіді на N з M питань». Наступний запуск `mode=missing` повторить лише питання без відповіді. Помилки, що повторювались би для кожного питання (ключ, модель, мережа, вичерпані повтори), як і раніше, зупиняють запуск зі статусом `failed`. Обрізана відповідь не зберігається: у моделей із thinking роздуми теж витрачають `AI_MAX_OUTPUT_TOKENS` (типово 8192); `AI_THINKING_BUDGET` задає бюджет роздумів (`0` вимикає їх там, де модель це дозволяє).
 
-PDF/DOCX-експорт асинхронний: `POST .../exports/` повертає 202 і запис зі статусом `pending → processing → ready / failed`; опитуй `GET .../exports/{export_id}/`, доки не з'явиться `download_url`. Worker надсилає питання й відповіді в Exporter service (`EXPORTER_URL`, типово `http://127.0.0.1:8002`, таймаут 60 с) і зберігає файл у `media/exports/`. Якщо сесія з тим самим вмістом уже експортується або експортована в цей формат, повертається 200 з наявним записом замість нового файлу. Під час генерації експорт повертає 409, сесія без питань — 400. Експорт, що висить у `pending`/`processing` довше 10 хвилин (`EXPORT_STALE_AFTER`), або `ready` без файлу на диску не перевикористовується: новий запит створює новий файл. Частоту створення обмежує `EXPORT_THROTTLE_RATE` (типово `10/minute` на користувача).
+PDF/DOCX-експорт асинхронний: `POST .../exports/` повертає 202 і запис зі статусом `pending → processing → ready / failed`; опитуй `GET .../exports/{export_id}/`, доки не з'явиться `download_url`. Worker надсилає питання й відповіді в Exporter service (`EXPORTER_URL`, типово `http://127.0.0.1:8002`, таймаут 60 с) і зберігає файл у `media/exports/`. Якщо сесія з тим самим вмістом уже експортується або експортована в цей формат, повертається 200 з наявним записом замість нового файлу. Під час генерації експорт повертає 409, сесія без питань — 400. Експорт, що висить у `pending`/`processing` довше 10 хвилин (`EXPORT_STALE_AFTER`), або `ready` без файлу на диску не перевикористовується: новий запит створює новий файл. Частоту створення обмежує `EXPORT_THROTTLE_RATE` (типово `10/minute` на користувача). Відповідь Exporter, що не є PDF/DOCX (перевіряється сигнатура файлу) або більша за 20 МБ (`EXPORT_MAX_BYTES`), дає `failed`. Якщо сесію видалили, поки Exporter працював, файл не зберігається.
 
 `user_answer=null` повертає показ AI-відповіді; `user_answer=""` навмисно залишає відповідь порожньою. Зміна тексту питання очищує його AI-відповідь і повертає сесію в `created`. За замовчуванням генерація відповідає лише на питання без AI-відповіді (нові, змінені або ті, що впали з помилкою), тож зміна одного питання коштує одного виклику AI; якщо таких питань немає, повертається 400. `mode=all` оновлює всі AI-відповіді сесії. Кожна відповідь зберігається одразу, тож після помилки готові відповіді лишаються. Кожен виклик AI повторюється до 3 разів із паузою.
 
@@ -124,6 +146,15 @@ PDF/DOCX-експорт асинхронний: `POST .../exports/` поверт
 .\venv\Scripts\python.exe manage.py test --settings=config.test_settings
 .\venv\Scripts\python.exe manage.py makemigrations --check --dry-run --settings=config.test_settings
 ```
+
+Покриття тестами (налаштування й поріг 95% — у `.coveragerc`):
+
+```powershell
+.\venv\Scripts\coverage.exe run manage.py test --settings=config.test_settings
+.\venv\Scripts\coverage.exe report
+```
+
+CI, крім тестів, збирає Docker-образ і запускає в ньому `manage.py check`, а таблицю покриття показує на сторінці запуску (Summary); покриття нижче 95% ламає CI.
 
 Локальні тести використовують окрему SQLite-базу в пам'яті. Зовнішній SDK Gemini заміняється через `unittest.mock` лише всередині тестів; у застосунку генерація завжди звертається до Gemini. CI запускає тести на PostgreSQL. Перевіряються JWT, повний сценарій, ізоляція користувачів, валідація файлів, помилки AI/черги, відсутня конфігурація та збереження правок. Живі Gemini, Redis, Docker і конкурентні блокування PostgreSQL потребують окремого інтеграційного запуску.
 
