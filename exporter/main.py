@@ -26,10 +26,9 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="KellyLab Exporter Service")
 
-EXPORT_TIME_LIMIT = 60  # максимум 60 секунд на генерацію
-MAX_REQUEST_SIZE = 2 * 1024 * 1024  # 2 MB ліміт на розмір вхідного JSON
+EXPORT_TIME_LIMIT = 60
+MAX_REQUEST_SIZE = 5 * 1024 * 1024  # 5 MB: 50 × (2000 + 20000) символів кирилицею ≈ 2.1 MB
 
-# Пошук шрифту з кирилицею для ReportLab
 CANDIDATE_FONTS = [
     os.path.join(os.path.dirname(__file__), "fonts", "DejaVuSans.ttf"),
     os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "arial.ttf"),
@@ -51,8 +50,17 @@ for font_path in CANDIDATE_FONTS:
             font_registered = True
             logger.info("Успішно зареєстровано шрифт для PDF: %s", font_path)
             break
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 -- битий шрифт не має валити старт, пробуємо наступний
             logger.warning("Не вдалося завантажити шрифт %s: %s", font_path, exc)
+
+
+# Керуючі символи, несумісні з XML (Word падає при їх записі)
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def strip_control_chars(text: str) -> str:
+    """Видаляє керуючі символи, що ламають python-docx (ValueError: not XML compatible)."""
+    return _CONTROL_CHARS_RE.sub("", text)
 
 
 def check_font_available() -> None:
@@ -67,7 +75,7 @@ def check_font_available() -> None:
 class QuestionItem(BaseModel):
     order: int
     text: str = Field(..., min_length=1, max_length=2000, description="Текст питання (до 2000 символів)")
-    answer: str = Field(default="", max_length=10000, description="Відповідь на питання (до 10000 символів)")
+    answer: str = Field(default="", max_length=20000, description="Відповідь на питання (до 20000 символів)")
 
 
 class ExportRequest(BaseModel):
@@ -91,21 +99,21 @@ class ExportRequest(BaseModel):
 def generate_docx(title: str, questions: list[QuestionItem]) -> bytes:
     """Генерація DOCX документа з підтримкою кирилиці."""
     doc = docx.Document()
-    doc.add_heading(title, level=1)
+    doc.add_heading(strip_control_chars(title), level=1)
     doc.add_paragraph("")
 
     for item in questions:
         p_q = doc.add_paragraph()
-        run_q = p_q.add_run(f"{item.order}. {item.text}")
+        run_q = p_q.add_run(f"{item.order}. {strip_control_chars(item.text)}")
         run_q.bold = True
 
         if item.answer.strip():
             p_a = doc.add_paragraph()
             p_a.paragraph_format.left_indent = docx.shared.Pt(18)
             p_a.add_run("Відповідь: ").italic = True
-            p_a.add_run(item.answer)
+            p_a.add_run(strip_control_chars(item.answer))
 
-        doc.add_paragraph("")  # відступ між питаннями
+        doc.add_paragraph("")
 
     buffer = io.BytesIO()
     doc.save(buffer)
@@ -166,7 +174,7 @@ def generate_pdf(title: str, questions: list[QuestionItem]) -> bytes:
         story.append(Paragraph(q_text, question_style))
 
         if item.answer.strip():
-            a_text = f"<i>Відповідь:</i> {html.escape(item.answer)}"
+            a_text = "<i>Відповідь:</i> " + html.escape(item.answer).replace("\n", "<br/>")
             story.append(Paragraph(a_text, answer_style))
         else:
             story.append(Spacer(1, 8))
@@ -195,7 +203,6 @@ def health_check():
 def export_file(request: ExportRequest):
     start = time.perf_counter()
     file_format = request.format
-    # Гарантуємо правильний порядок питань
     sorted_questions = sorted(request.questions, key=lambda q: q.order)
 
     try:
@@ -214,7 +221,6 @@ def export_file(request: ExportRequest):
         if duration > EXPORT_TIME_LIMIT:
             raise HTTPException(status_code=504, detail="Експорт перевищив ліміт часу")
 
-        # Безпечне та компактне ім'я файлу (до 60 символів, без службових символів)
         clean_title = (
             re.sub(r'[\\/*?:"<>|\r\n\t]', "_", request.title.strip())[:60].strip()
             or "export"
@@ -234,9 +240,9 @@ def export_file(request: ExportRequest):
 
     except HTTPException:
         raise
-    except Exception as exc:
-        logger.error("code=500 format=%s error=%s", file_format, exc, exc_info=True)
-        raise HTTPException(status_code=500, detail="Внутрішня помилка сервера") from exc
+    except Exception:
+        logger.exception("code=500 format=%s", file_format)
+        raise HTTPException(status_code=500, detail="Внутрішня помилка сервера")
 
 
 if __name__ == "__main__":

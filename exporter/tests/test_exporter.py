@@ -1,10 +1,12 @@
+import io
 import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from fastapi.testclient import TestClient
+import docx
 import main
+from fastapi.testclient import TestClient
 from main import app
 
 client = TestClient(app)
@@ -130,14 +132,13 @@ def test_health_check_returns_200_ok():
 
 
 def test_export_answer_too_long_returns_422():
-    questions = [{"order": 1, "text": "Питання", "answer": "A" * 10001}]
+    questions = [{"order": 1, "text": "Питання", "answer": "A" * 20001}]
     payload = dict(SAMPLE_PAYLOAD, questions=questions)
     response = client.post("/export", json=payload)
     assert response.status_code == 422
 
 
 def test_questions_are_sorted_by_order_in_export():
-    # Передаємо питання не за порядком: спочатку 2, потім 1
     unordered = [
         {"order": 2, "text": "Друге питання", "answer": ""},
         {"order": 1, "text": "Перше питання", "answer": ""},
@@ -146,8 +147,6 @@ def test_questions_are_sorted_by_order_in_export():
     response = client.post("/export", json=payload)
     assert response.status_code == 200
 
-    # Перевіряємо порядок у згенерованому docx
-    import io, docx
     doc = docx.Document(io.BytesIO(response.content))
     paragraphs = [p.text for p in doc.paragraphs if p.text]
     assert paragraphs[1].startswith("1. Перше питання")
@@ -172,3 +171,38 @@ def test_fail_fast_when_font_missing(monkeypatch):
     response = client.post("/export", json=payload)
     assert response.status_code == 500
     assert "шрифт із кирилицею недоступний" in response.json()["detail"]
+
+
+def test_control_chars_in_docx_do_not_crash():
+    """Керуючі символи з PDF/Word не мають ламати python-docx."""
+    evil_text = "Питання\x0bз\x0cкеруючими\x01символами"
+    evil_answer = "Відповідь\x0bз\x0cкеруючими\x01символами"
+    payload = {
+        "format": "docx",
+        "title": "Тест керуючих символів",
+        "questions": [{"order": 1, "text": evil_text, "answer": evil_answer}],
+    }
+    response = client.post("/export", json=payload)
+    assert response.status_code == 200
+    assert response.content.startswith(b"PK")
+
+
+def test_newlines_in_pdf_answer_rendered_as_br():
+    """Переноси рядків у відповіді мають зберігатися у PDF (через <br/>)."""
+    multiline_answer = "Рядок перший\nРядок другий\nРядок третій"
+    payload = {
+        "format": "pdf",
+        "title": "Тест переносів",
+        "questions": [{"order": 1, "text": "Питання", "answer": multiline_answer}],
+    }
+    response = client.post("/export", json=payload)
+    assert response.status_code == 200
+    assert response.content.startswith(b"%PDF")
+
+
+def test_max_answer_length_accepted():
+    """Відповідь рівно 20000 символів — граничний коректний випадок."""
+    questions = [{"order": 1, "text": "Питання", "answer": "А" * 20000}]
+    payload = dict(SAMPLE_PAYLOAD, questions=questions)
+    response = client.post("/export", json=payload)
+    assert response.status_code == 200
