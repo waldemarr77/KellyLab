@@ -602,3 +602,9 @@ def test_numbering_regex_does_not_strip_floats():
     text = "1.5 GB - це ліміт?"
     questions = find_quetion(text)
     assert questions == ["1.5 GB - це ліміт?"]
+
+
+def test_duplicate_questions_are_deduplicated_preserving_order():
+    text = "1. Що таке ORM?\n2. Що таке Python?\n3. Що таке ORM?"
+    assert find_quetion(text) == ["Що таке ORM?", "Що таке Python?"]
+

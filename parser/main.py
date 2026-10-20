@@ -212,7 +212,7 @@ def find_quetion(text: str) -> list[str]:
         cleaned = NUMBERING_RE.sub("", line).strip()
         if cleaned and is_question(cleaned):
             questions.append(cleaned)
-    return questions
+    return list(dict.fromkeys(questions))
 
 
 def handle_parse(file: UploadFile) -> dict:
