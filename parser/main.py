@@ -3,6 +3,7 @@ import logging
 import re
 import time
 import zipfile
+import zlib
 from itertools import islice
 from pathlib import Path
 
@@ -14,7 +15,6 @@ from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 from lxml.etree import XMLSyntaxError
 from pdfminer.pdfpage import PDFPage
-from pdfplumber.utils.exceptions import MalformedPDFException, PdfminerException
 
 logging.basicConfig(
     level=logging.INFO,
@@ -47,7 +47,7 @@ QUESTION_STARTERS = {
     "explain", "describe", "define", "compare", "discuss",
 }  # fmt: skip
 
-NUMBERING_RE = re.compile(r"^\s*\d+\s*[.)\-]\s*")
+NUMBERING_RE = re.compile(r"^\s*\d+\s*[.)\-](?!\d)\s*")
 FIRST_WORD_RE = re.compile(r"^\w+")
 SENTENCE_END = (".", "?", "!", ":", ";")
 
@@ -101,17 +101,21 @@ def parser_pdf(content: bytes) -> str:
     deadline = time.monotonic() + PARSE_TIME_LIMIT
     pages = []
     try:
-        with pdfplumber.open(io.BytesIO(content)) as pdf:
-            check_pdf_pages(pdf)
+        pdf = pdfplumber.open(io.BytesIO(content))
+        check_pdf_pages(pdf)
+        with pdf:
             for page in pdf.pages:
                 if time.monotonic() > deadline:
                     raise HTTPException(
                         status_code=413, detail="Обробка PDF зайняла забагато часу"
                     )
                 page_text = page.extract_text()
+                page.close()
                 if page_text:
                     pages.append(page_text)
-    except (PdfminerException, MalformedPDFException) as exc:
+    except HTTPException:
+        raise
+    except Exception as exc:  # pdfminer на битих файлах кидає що завгодно
         raise HTTPException(
             status_code=400,
             detail="Не вдалося прочитати PDF файл, можливо він пошкоджений",
@@ -143,7 +147,14 @@ def parser_docx(content: bytes) -> str:
                     if cell._tc not in seen:
                         seen.add(cell._tc)
                         blocks.append(cell.text)
-    except (zipfile.BadZipFile, KeyError, XMLSyntaxError) as exc:
+    except (
+        zipfile.BadZipFile,
+        KeyError,
+        XMLSyntaxError,
+        zlib.error,
+        ValueError,
+        NotImplementedError,
+    ) as exc:
         raise HTTPException(
             status_code=400,
             detail="Не вдалося прочитати DOCX файл, можливо він пошкоджений",
@@ -163,7 +174,7 @@ def tru_format(file_format: str, content: bytes) -> str:
 
 def merge_wrapped_lines(text: str) -> list[str]:
     """Склеює рядки, якщо наступний рядок є продовженням попереднього."""
-    lines: list[str] = []
+    groups: list[list[str]] = []
     previous_blank = True
     for raw_line in text.splitlines():
         line = raw_line.strip()
@@ -171,17 +182,21 @@ def merge_wrapped_lines(text: str) -> list[str]:
             previous_blank = True
             continue
         is_continuation = (
-            bool(lines)
+            bool(groups)
             and not previous_blank
-            and line[0].islower()
-            and not lines[-1].endswith(SENTENCE_END)
+            and not groups[-1][-1].endswith(SENTENCE_END)
+            and not NUMBERING_RE.match(line)
+            and (
+                line[0].islower()
+                or (NUMBERING_RE.match(groups[-1][0]) and line.endswith("?"))
+            )
         )
         if is_continuation:
-            lines[-1] += " " + line
+            groups[-1].append(line)
         else:
-            lines.append(line)
+            groups.append([line])
         previous_blank = False
-    return lines
+    return [" ".join(parts) for parts in groups]
 
 
 def is_question(line: str) -> bool:
@@ -289,10 +304,6 @@ def parser_file(file: UploadFile):
             status_code=500, detail="Внутрішня помилка сервера"
         ) from exc
     finally:
-        try:
-            file.file.close()
-        except Exception:
-            pass
         log_request(file.filename, status_code, time.perf_counter() - start, error)
 
 

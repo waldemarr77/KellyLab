@@ -3,11 +3,6 @@ import logging
 import zipfile
 from types import SimpleNamespace
 
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
 import docx
 import main
 import pytest
@@ -45,7 +40,34 @@ def make_docx(paragraphs=(), table_rows=()) -> bytes:
     return buffer.getvalue()
 
 
-def make_pdf(lines: list[str], pages: int = 1) -> bytes:
+def make_docm() -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as z:
+        z.writestr(
+            "[Content_Types].xml",
+            b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            b'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            b'<Override PartName="/word/document.xml" '
+            b'ContentType="application/vnd.ms-word.document.macroEnabled.main+xml"/>'
+            b"</Types>",
+        )
+        z.writestr(
+            "_rels/.rels",
+            b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            b'<Relationship Id="rId1" '
+            b'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+            b'Target="word/document.xml"/>'
+            b"</Relationships>",
+        )
+        z.writestr(
+            "word/document.xml",
+            b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body/></w:document>',
+        )
+    return buffer.getvalue()
+
+
+def make_pdf(lines: list[str], pages: int = 1, rotate: str | None = None) -> bytes:
     """Мінімальний валідний PDF (тільки ASCII). Усі сторінки ділять один вміст."""
     commands = ["BT", "/F1 12 Tf", "14 TL", "50 750 Td"]
     for line in lines:
@@ -55,10 +77,11 @@ def make_pdf(lines: list[str], pages: int = 1) -> bytes:
     stream = "\n".join(commands).encode("latin-1")
 
     kids = " ".join(f"{5 + i} 0 R" for i in range(pages)).encode()
+    rotate_str = f" /Rotate {rotate}" if rotate else ""
     page_object = (
-        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
-        b"/Contents 4 0 R /Resources << /Font << /F1 3 0 R >> >> >>"
-    )
+        f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792]{rotate_str} "
+        "/Contents 4 0 R /Resources << /Font << /F1 3 0 R >> >> >>"
+    ).encode("latin-1")
     objects = [
         b"<< /Type /Catalog /Pages 2 0 R >>",
         b"<< /Type /Pages /Kids [" + kids + b"] /Count %d >>" % pages,
@@ -542,3 +565,40 @@ def test_newlines_in_filename_cannot_forge_log_lines(caplog):
 def test_long_filename_is_truncated_in_logs():
     assert len(main.safe_for_log("a" * 500)) == 100
     assert main.safe_for_log(None) is None
+
+
+def test_large_txt_linear_complexity():
+    """200 000 рядків обробляються швидко без квадратичної складності."""
+    import time
+
+    text = "\n".join(["abc def"] * 200_000)
+    start = time.perf_counter()
+    lines = main.merge_wrapped_lines(text)
+    duration = time.perf_counter() - start
+    assert len(lines) == 1
+    assert duration < 2.0
+
+
+def test_docm_renamed_to_docx_returns_400():
+    response = post_file("macro.docx", make_docm())
+    assert response.status_code == 400
+    assert "пошкоджений" in response.json()["detail"]
+
+
+def test_pdf_with_rotate_abc_returns_400():
+    pdf = make_pdf(["1. What is Python?"], rotate="/abc")
+    response = post_file("corrupted_rotate.pdf", pdf)
+    assert response.status_code == 400
+    assert "пошкоджений" in response.json()["detail"]
+
+
+def test_multiline_question_with_uppercase_continuation_is_merged():
+    text = "1. What is the difference between\nPython 2 and Python 3?"
+    questions = find_quetion(text)
+    assert questions == ["What is the difference between Python 2 and Python 3?"]
+
+
+def test_numbering_regex_does_not_strip_floats():
+    text = "1.5 GB - це ліміт?"
+    questions = find_quetion(text)
+    assert questions == ["1.5 GB - це ліміт?"]
