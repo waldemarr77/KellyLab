@@ -11,6 +11,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
+from reportlab.lib.colors import HexColor
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.pdfbase import pdfmetrics
@@ -53,6 +54,9 @@ for font_path in CANDIDATE_FONTS:
         except Exception as exc:  # noqa: BLE001 -- битий шрифт не має валити старт, пробуємо наступний
             logger.warning("Не вдалося завантажити шрифт %s: %s", font_path, exc)
 
+if not font_registered:
+    logger.error("Не знайдено жодного придатного шрифту з підтримкою кирилиці. PDF-експорт буде недоступний.")
+
 
 # Керуючі символи, несумісні з XML (Word падає при їх записі)
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
@@ -77,6 +81,13 @@ class QuestionItem(BaseModel):
     text: str = Field(..., min_length=1, max_length=2000, description="Текст питання (до 2000 символів)")
     answer: str = Field(default="", max_length=20000, description="Відповідь на питання (до 20000 символів)")
 
+    @field_validator("answer", mode="before")
+    @classmethod
+    def coerce_answer(cls, v: object) -> str:
+        if v is None:
+            return ""
+        return str(v)
+
 
 class ExportRequest(BaseModel):
     format: str = Field(..., description="Формат файлу: 'pdf' або 'docx'")
@@ -93,6 +104,14 @@ class ExportRequest(BaseModel):
         cleaned = v.strip().lower()
         if cleaned not in ("pdf", "docx"):
             raise ValueError(f"Непідтримуваний формат: {v!r}. Дозволені: 'pdf', 'docx'")
+        return cleaned
+
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, v: str) -> str:
+        cleaned = v.strip()
+        if not cleaned:
+            raise ValueError("Назва документа не може бути порожньою")
         return cleaned
 
 
@@ -160,21 +179,24 @@ def generate_pdf(title: str, questions: list[QuestionItem]) -> bytes:
         leading=14,
         leftIndent=15,
         spaceAfter=12,
-        textColor="#333333",
+        textColor=HexColor("#333333"),
         wordWrap="CJK",
     )
 
+    clean_title = strip_control_chars(title)
     story = [
-        Paragraph(html.escape(title), title_style),
+        Paragraph(html.escape(clean_title).replace("\n", "<br/>"), title_style),
         Spacer(1, 10),
     ]
 
     for item in questions:
-        q_text = f"<b>{item.order}.</b> {html.escape(item.text)}"
+        clean_text = strip_control_chars(item.text)
+        q_text = f"<b>{item.order}.</b> " + html.escape(clean_text).replace("\n", "<br/>")
         story.append(Paragraph(q_text, question_style))
 
-        if item.answer.strip():
-            a_text = "<i>Відповідь:</i> " + html.escape(item.answer).replace("\n", "<br/>")
+        clean_answer = strip_control_chars(item.answer)
+        if clean_answer.strip():
+            a_text = "<i>Відповідь:</i> " + html.escape(clean_answer).replace("\n", "<br/>")
             story.append(Paragraph(a_text, answer_style))
         else:
             story.append(Spacer(1, 8))
@@ -188,8 +210,29 @@ async def limit_request_size(request: Request, call_next):
     """Обмежує розмір вхідного запиту для запобігання переповнення пам'яті."""
     if request.method == "POST":
         length = request.headers.get("content-length")
-        if length and length.isdigit() and int(length) > MAX_REQUEST_SIZE:
-            return JSONResponse(status_code=413, content={"detail": "Розмір запиту перевищує ліміт"})
+        if length is not None:
+            try:
+                if int(length) > MAX_REQUEST_SIZE:
+                    return JSONResponse(
+                        status_code=413,
+                        content={"detail": "Розмір запиту перевищує ліміт"},
+                    )
+            except ValueError:
+                return JSONResponse(
+                    status_code=400,
+                    content={"detail": "Некоректний заголовок Content-Length"},
+                )
+        else:
+            # Запит без Content-Length (наприклад, chunked transfer): читаємо потоком з лімітом
+            body = bytearray()
+            async for chunk in request.stream():
+                body.extend(chunk)
+                if len(body) > MAX_REQUEST_SIZE:
+                    return JSONResponse(
+                        status_code=413,
+                        content={"detail": "Розмір запиту перевищує ліміт"},
+                    )
+            request._body = bytes(body)
     return await call_next(request)
 
 
@@ -219,21 +262,22 @@ def export_file(request: ExportRequest):
 
         duration = time.perf_counter() - start
         if duration > EXPORT_TIME_LIMIT:
+            logger.warning("Експорт тривав %.2f с (перевищив ліміт %d с)", duration, EXPORT_TIME_LIMIT)
             raise HTTPException(status_code=504, detail="Експорт перевищив ліміт часу")
 
         clean_title = (
-            re.sub(r'[\\/*?:"<>|\r\n\t]', "_", request.title.strip())[:60].strip()
+            re.sub(r'[\\/*?:"<>|\x00-\x1f]', "_", strip_control_chars(request.title.strip()))[:60].strip()
             or "export"
         )
         safe_filename = quote(f"{clean_title}.{extension}")
         headers = {
-            "Content-Disposition": f"attachment; filename*=UTF-8''{safe_filename}",
+            "Content-Disposition": f'attachment; filename="export.{extension}"; filename*=UTF-8\'\'{safe_filename}',
         }
 
         logger.info(
             "code=200 format=%s title=%s duration=%.2f",
             file_format,
-            request.title,
+            clean_title,
             duration,
         )
         return Response(content=content, media_type=media_type, headers=headers)

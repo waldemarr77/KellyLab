@@ -1,8 +1,4 @@
 import io
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import docx
 import main
@@ -206,3 +202,77 @@ def test_max_answer_length_accepted():
     payload = dict(SAMPLE_PAYLOAD, questions=questions)
     response = client.post("/export", json=payload)
     assert response.status_code == 200
+
+
+def test_export_answer_none_coerced_to_empty_string():
+    """Якщо Django надсилає answer: null, сервіс не має повертати 422."""
+    payload = {
+        "format": "pdf",
+        "title": "Питання без відповіді",
+        "questions": [{"order": 1, "text": "Питання", "answer": None}],
+    }
+    response = client.post("/export", json=payload)
+    assert response.status_code == 200
+    assert response.content.startswith(b"%PDF")
+
+
+def test_export_whitespace_title_returns_422():
+    """Назва з одних пробілів вважається порожньою -> 422."""
+    payload = dict(SAMPLE_PAYLOAD, title="   ")
+    response = client.post("/export", json=payload)
+    assert response.status_code == 422
+
+
+def test_control_chars_in_pdf_do_not_crash():
+    """Керуючі символи в тексті та відповіді не мають ламати ReportLab PDF."""
+    evil_text = "Питання\x0bз\x0cкеруючими\x01символами"
+    evil_answer = "Відповідь\x0bз\x0cкеруючими\x01символами"
+    payload = {
+        "format": "pdf",
+        "title": "Тест керуючих символів PDF",
+        "questions": [{"order": 1, "text": evil_text, "answer": evil_answer}],
+    }
+    response = client.post("/export", json=payload)
+    assert response.status_code == 200
+    assert response.content.startswith(b"%PDF")
+
+
+def test_newlines_in_pdf_question_rendered_as_br():
+    """Переноси рядків у тексті питання мають зберігатися у PDF."""
+    multiline_question = "def foo():\n    return 42"
+    payload = {
+        "format": "pdf",
+        "title": "Питання з кодом",
+        "questions": [{"order": 1, "text": multiline_question, "answer": "42"}],
+    }
+    response = client.post("/export", json=payload)
+    assert response.status_code == 200
+    assert response.content.startswith(b"%PDF")
+
+
+def test_export_chunked_oversized_request_is_rejected():
+    """Потоковий запит (chunked / без Content-Length) > MAX_REQUEST_SIZE відхиляється з 413."""
+    def stream_huge_body():
+        chunk = b"x" * (1024 * 1024)
+        for _ in range(6):  # 6 MB > 5 MB ліміту
+            yield chunk
+
+    response = client.post("/export", content=stream_huge_body())
+    assert response.status_code == 413
+
+
+def test_export_invalid_content_length_returns_400():
+    """Некоректне значення Content-Length повертає 400."""
+    headers = {"content-length": "not-a-number"}
+    response = client.post("/export", content=b"{}", headers=headers)
+    assert response.status_code == 400
+
+
+def test_content_disposition_header_format():
+    """Content-Disposition містить ASCII fallback і UTF-8 filename*."""
+    payload = dict(SAMPLE_PAYLOAD, title="Звіт про співбесіду")
+    response = client.post("/export", json=payload)
+    assert response.status_code == 200
+    cd = response.headers.get("content-disposition", "")
+    assert 'filename="export.pdf"' in cd
+    assert "filename*=UTF-8''" in cd
