@@ -1,0 +1,278 @@
+import io
+
+import docx
+import main
+from fastapi.testclient import TestClient
+from main import app
+
+client = TestClient(app)
+
+SAMPLE_PAYLOAD = {
+    "format": "pdf",
+    "title": "Python Junior Співбесіда",
+    "questions": [
+        {"order": 1, "text": "Що таке ORM?", "answer": "ORM — це об'єктно-реляційне відображення."},
+        {"order": 2, "text": "Що таке транзакція?", "answer": ""},
+    ],
+}
+
+
+def test_export_pdf_success():
+    payload = dict(SAMPLE_PAYLOAD, format="pdf")
+    response = client.post("/export", json=payload)
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.content.startswith(b"%PDF")
+    assert len(response.content) > 1000
+
+
+def test_export_docx_success():
+    payload = dict(SAMPLE_PAYLOAD, format="docx")
+    response = client.post("/export", json=payload)
+    assert response.status_code == 200
+    assert (
+        response.headers["content-type"]
+        == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
+    assert response.content.startswith(b"PK")
+    assert len(response.content) > 1000
+
+
+def test_export_invalid_format_returns_422():
+    payload = dict(SAMPLE_PAYLOAD, format="txt")
+    response = client.post("/export", json=payload)
+    assert response.status_code == 422
+    assert "detail" in response.json()
+
+
+def test_export_case_insensitive_format():
+    payload = dict(SAMPLE_PAYLOAD, format="PDF")
+    response = client.post("/export", json=payload)
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/pdf"
+
+
+def test_export_too_many_questions_returns_422():
+    questions = [{"order": i, "text": f"Питання {i}", "answer": ""} for i in range(1, 52)]
+    payload = dict(SAMPLE_PAYLOAD, questions=questions)
+    response = client.post("/export", json=payload)
+    assert response.status_code == 422
+
+
+def test_export_question_text_too_long_returns_422():
+    questions = [{"order": 1, "text": "A" * 2001, "answer": ""}]
+    payload = dict(SAMPLE_PAYLOAD, questions=questions)
+    response = client.post("/export", json=payload)
+    assert response.status_code == 422
+
+
+def test_export_empty_title_returns_422():
+    payload = dict(SAMPLE_PAYLOAD, title="")
+    response = client.post("/export", json=payload)
+    assert response.status_code == 422
+
+
+def test_export_special_characters_escaping():
+    payload = {
+        "format": "pdf",
+        "title": "Тест & Символи < > \" '",
+        "questions": [
+            {
+                "order": 1,
+                "text": "Чи правда, що 2 < 3 & 4 > 1?",
+                "answer": "Так, бо 2 < 3 та 4 > 1.",
+            }
+        ],
+    }
+    response = client.post("/export", json=payload)
+    assert response.status_code == 200
+    assert response.content.startswith(b"%PDF")
+
+
+def test_export_empty_questions():
+    payload = {
+        "format": "docx",
+        "title": "Порожній список питань",
+        "questions": [],
+    }
+    response = client.post("/export", json=payload)
+    assert response.status_code == 200
+    assert response.content.startswith(b"PK")
+
+
+def test_export_internal_server_error_hides_stack_trace(monkeypatch):
+    def broken_pdf(*args, **kwargs):
+        raise RuntimeError("Secret internal database/generator exception")
+
+    monkeypatch.setattr(main, "generate_pdf", broken_pdf)
+    payload = dict(SAMPLE_PAYLOAD, format="pdf")
+    response = client.post("/export", json=payload)
+
+    assert response.status_code == 500
+    data = response.json()
+    assert data["detail"] == "Внутрішня помилка сервера"
+    assert "Secret internal" not in response.text
+    assert "Traceback" not in response.text
+
+
+def test_export_oversized_request_is_rejected():
+    huge_headers = {"content-length": str(main.MAX_REQUEST_SIZE + 1000)}
+    response = client.post("/export", content=b"{}", headers=huge_headers)
+    assert response.status_code == 413
+
+
+def test_health_check_returns_200_ok():
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+def test_export_answer_too_long_returns_422():
+    questions = [{"order": 1, "text": "Питання", "answer": "A" * 20001}]
+    payload = dict(SAMPLE_PAYLOAD, questions=questions)
+    response = client.post("/export", json=payload)
+    assert response.status_code == 422
+
+
+def test_questions_are_sorted_by_order_in_export():
+    unordered = [
+        {"order": 2, "text": "Друге питання", "answer": ""},
+        {"order": 1, "text": "Перше питання", "answer": ""},
+    ]
+    payload = dict(SAMPLE_PAYLOAD, format="docx", questions=unordered)
+    response = client.post("/export", json=payload)
+    assert response.status_code == 200
+
+    doc = docx.Document(io.BytesIO(response.content))
+    paragraphs = [p.text for p in doc.paragraphs if p.text]
+    assert paragraphs[1].startswith("1. Перше питання")
+    assert paragraphs[2].startswith("2. Друге питання")
+
+
+def test_long_unbroken_string_in_pdf_does_not_crash():
+    long_url = "https://example.com/very/long/path/" + "abcdefghij" * 20
+    payload = {
+        "format": "pdf",
+        "title": "Довгий URL",
+        "questions": [{"order": 1, "text": long_url, "answer": long_url}],
+    }
+    response = client.post("/export", json=payload)
+    assert response.status_code == 200
+    assert response.content.startswith(b"%PDF")
+
+
+def test_fail_fast_when_font_missing(monkeypatch):
+    monkeypatch.setattr(main, "font_registered", False)
+    payload = dict(SAMPLE_PAYLOAD, format="pdf")
+    response = client.post("/export", json=payload)
+    assert response.status_code == 500
+    assert "шрифт із кирилицею недоступний" in response.json()["detail"]
+
+
+def test_control_chars_in_docx_do_not_crash():
+    """Керуючі символи з PDF/Word не мають ламати python-docx."""
+    evil_text = "Питання\x0bз\x0cкеруючими\x01символами"
+    evil_answer = "Відповідь\x0bз\x0cкеруючими\x01символами"
+    payload = {
+        "format": "docx",
+        "title": "Тест керуючих символів",
+        "questions": [{"order": 1, "text": evil_text, "answer": evil_answer}],
+    }
+    response = client.post("/export", json=payload)
+    assert response.status_code == 200
+    assert response.content.startswith(b"PK")
+
+
+def test_newlines_in_pdf_answer_rendered_as_br():
+    """Переноси рядків у відповіді мають зберігатися у PDF (через <br/>)."""
+    multiline_answer = "Рядок перший\nРядок другий\nРядок третій"
+    payload = {
+        "format": "pdf",
+        "title": "Тест переносів",
+        "questions": [{"order": 1, "text": "Питання", "answer": multiline_answer}],
+    }
+    response = client.post("/export", json=payload)
+    assert response.status_code == 200
+    assert response.content.startswith(b"%PDF")
+
+
+def test_max_answer_length_accepted():
+    """Відповідь рівно 20000 символів — граничний коректний випадок."""
+    questions = [{"order": 1, "text": "Питання", "answer": "А" * 20000}]
+    payload = dict(SAMPLE_PAYLOAD, questions=questions)
+    response = client.post("/export", json=payload)
+    assert response.status_code == 200
+
+
+def test_export_answer_none_coerced_to_empty_string():
+    """Якщо Django надсилає answer: null, сервіс не має повертати 422."""
+    payload = {
+        "format": "pdf",
+        "title": "Питання без відповіді",
+        "questions": [{"order": 1, "text": "Питання", "answer": None}],
+    }
+    response = client.post("/export", json=payload)
+    assert response.status_code == 200
+    assert response.content.startswith(b"%PDF")
+
+
+def test_export_whitespace_title_returns_422():
+    """Назва з одних пробілів вважається порожньою -> 422."""
+    payload = dict(SAMPLE_PAYLOAD, title="   ")
+    response = client.post("/export", json=payload)
+    assert response.status_code == 422
+
+
+def test_control_chars_in_pdf_do_not_crash():
+    """Керуючі символи в тексті та відповіді не мають ламати ReportLab PDF."""
+    evil_text = "Питання\x0bз\x0cкеруючими\x01символами"
+    evil_answer = "Відповідь\x0bз\x0cкеруючими\x01символами"
+    payload = {
+        "format": "pdf",
+        "title": "Тест керуючих символів PDF",
+        "questions": [{"order": 1, "text": evil_text, "answer": evil_answer}],
+    }
+    response = client.post("/export", json=payload)
+    assert response.status_code == 200
+    assert response.content.startswith(b"%PDF")
+
+
+def test_newlines_in_pdf_question_rendered_as_br():
+    """Переноси рядків у тексті питання мають зберігатися у PDF."""
+    multiline_question = "def foo():\n    return 42"
+    payload = {
+        "format": "pdf",
+        "title": "Питання з кодом",
+        "questions": [{"order": 1, "text": multiline_question, "answer": "42"}],
+    }
+    response = client.post("/export", json=payload)
+    assert response.status_code == 200
+    assert response.content.startswith(b"%PDF")
+
+
+def test_export_chunked_oversized_request_is_rejected():
+    """Потоковий запит (chunked / без Content-Length) > MAX_REQUEST_SIZE відхиляється з 413."""
+    def stream_huge_body():
+        chunk = b"x" * (1024 * 1024)
+        for _ in range(6):  # 6 MB > 5 MB ліміту
+            yield chunk
+
+    response = client.post("/export", content=stream_huge_body())
+    assert response.status_code == 413
+
+
+def test_export_invalid_content_length_returns_400():
+    """Некоректне значення Content-Length повертає 400."""
+    headers = {"content-length": "not-a-number"}
+    response = client.post("/export", content=b"{}", headers=headers)
+    assert response.status_code == 400
+
+
+def test_content_disposition_header_format():
+    """Content-Disposition містить ASCII fallback і UTF-8 filename*."""
+    payload = dict(SAMPLE_PAYLOAD, title="Звіт про співбесіду")
+    response = client.post("/export", json=payload)
+    assert response.status_code == 200
+    cd = response.headers.get("content-disposition", "")
+    assert 'filename="export.pdf"' in cd
+    assert "filename*=UTF-8''" in cd
