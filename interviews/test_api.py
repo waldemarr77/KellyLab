@@ -153,7 +153,7 @@ class InterviewFlowTests(APITestCase):
         self.assertEqual(response.data[0]['text'], 'Що таке Python?')
 
     def test_invalid_files_and_ambiguous_input(self):
-        for name, content in [('bad.pdf', b'pdf'), ('bad.txt', b'\xff'), ('huge.txt', b'x' * 100001)]:
+        for name, content in [('notes.md', b'q'), ('bad.txt', b'\xff'), ('huge.txt', b'x' * 100001)]:
             response = self.client.post(self.url + 'import/', {
                 'file': SimpleUploadedFile(name, content),
             }, format='multipart')

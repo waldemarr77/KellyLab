@@ -36,3 +36,12 @@ services:
 
   beat:
     <<: *prod
+
+  parser:
+    restart: unless-stopped
+
+  exporter:
+    restart: unless-stopped
+
+  runner:
+    restart: unless-stopped

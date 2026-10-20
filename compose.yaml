@@ -3,7 +3,7 @@
 x-app: &app
   build: .
   # Every setting from .env reaches the containers; `environment` below overrides
-  # the values that must differ inside Docker (database, Redis, Exporter hosts).
+  # the values that must differ inside Docker (database, Redis and service hosts).
   env_file:
     - path: .env
       required: false
@@ -20,10 +20,10 @@ x-app: &app
     CELERY_BROKER_URL: redis://redis:6379/0
     CACHE_URL: redis://redis:6379/1
     CELERY_TASK_ALWAYS_EAGER: "false"
-    # Exporter running on the host (uvicorn on port 8002) until it gets its own service here.
-    EXPORTER_URL: ${COMPOSE_EXPORTER_URL:-http://host.docker.internal:8002}
-  extra_hosts:
-    - host.docker.internal:host-gateway
+    # The FastAPI services below, reached by their service names.
+    PARSER_URL: http://parser:8001
+    EXPORTER_URL: http://exporter:8002
+    RUNNER_URL: http://runner:8003
 
 services:
   db:
@@ -74,6 +74,9 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+      # PDF/DOCX import calls it during the request; without it only that import fails (503).
+      parser:
+        condition: service_started
 
   worker:
     <<: *app
@@ -87,11 +90,19 @@ services:
       start_period: 30s
     volumes:
       - media:/app/media
+    # `sandbox` only to reach the runner, which has no other network.
+    networks:
+      - default
+      - sandbox
     depends_on:
       migrate:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+      exporter:
+        condition: service_started
+      runner:
+        condition: service_started
 
   worker-ai:
     <<: *app
@@ -117,6 +128,65 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+
+  # PDF/DOCX import: web sends the uploaded file here and gets the list of questions back.
+  parser:
+    build: ./parser
+    # The Parser has no health endpoint, so the check only opens its port.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8001), timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # PDF/DOCX export: the worker sends the questions with answers and saves the file it gets back.
+  exporter:
+    build: ./exporter
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Runs submitted solutions for the worker (POST /run). Each test runs as an unprivileged
+  # sandbox user with CPU, memory and process limits (runner/main.py); the container adds the rest.
+  runner:
+    build: ./runner
+    # Reaps processes that the tested code leaves behind.
+    init: true
+    read_only: true
+    # The only writable place: a private folder per run, deleted after it.
+    tmpfs:
+      - /sandbox:size=64m,mode=711
+    # Root in the container is needed only to start the code as a sandbox user.
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
+    ipc: none
+    pids_limit: 128
+    mem_limit: 768m
+    cpus: 2
+    networks:
+      - sandbox
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+networks:
+  default:
+  # No route outside, so the runner and the code it runs cannot reach the internet.
+  # Only the worker joins it, to call the runner.
+  sandbox:
+    internal: true
 
 volumes:
   postgres_data:

@@ -220,6 +220,12 @@ GENERATION_STALE_AFTER = timedelta(minutes=10)
 DATA_UPLOAD_MAX_MEMORY_SIZE = 1024 * 1024
 # DATA_UPLOAD_MAX_MEMORY_SIZE does not count files, so the handler below cuts off a file at this size.
 FILE_UPLOAD_MAX_SIZE = 100_000
+# PDF and DOCX take more bytes for the same questions; they go to the Parser, which accepts up to 10 MB.
+DOCUMENT_UPLOAD_MAX_SIZE = 5_000_000
+# Parser service: finds the questions in PDF and DOCX uploads; TXT is read here.
+PARSER_URL = os.getenv('PARSER_URL', 'http://127.0.0.1:8001')
+# The import waits for it inside the request, so stay below gunicorn's 60 s timeout.
+PARSER_TIMEOUT_SECONDS = 30
 FILE_UPLOAD_HANDLERS = [
     'config.uploads.FileSizeLimitUploadHandler',
     'django.core.files.uploadhandler.MemoryFileUploadHandler',

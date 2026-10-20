@@ -1,9 +1,13 @@
+from pathlib import Path
+
 from django.conf import settings
 from rest_framework import serializers
 
+from config.uploads import DOCUMENT_SUFFIXES, format_size
 from questions.models import MAX_QUESTIONS_PER_SESSION
 
 from .models import Session
+from .parser import parse_document
 
 
 class SessionSerializer(serializers.ModelSerializer):
@@ -24,22 +28,38 @@ class ImportSerializer(serializers.Serializer):
 
     def validate(self, attrs):
         if ('text' in attrs) == ('file' in attrs):
-            raise serializers.ValidationError('Передай або text, або один TXT-файл.')
-        if 'file' in attrs:
-            upload = attrs['file']
-            if not upload.name.lower().endswith('.txt') or upload.size > settings.FILE_UPLOAD_MAX_SIZE:
-                raise serializers.ValidationError({'file': 'Потрібен TXT до 100 KB у UTF-8.'})
-            try:
-                text = upload.read().decode('utf-8-sig')
-            except UnicodeDecodeError as exc:
-                raise serializers.ValidationError({'file': 'Кодування файлу має бути UTF-8.'}) from exc
+            raise serializers.ValidationError('Передай або text, або один файл: TXT, PDF чи DOCX.')
+        upload = attrs.get('file')
+        suffix = Path(upload.name).suffix.lower() if upload is not None else ''
+        if suffix in DOCUMENT_SUFFIXES:
+            if upload.size > settings.DOCUMENT_UPLOAD_MAX_SIZE:
+                raise serializers.ValidationError(
+                    {'file': f'PDF або DOCX має бути до {format_size(settings.DOCUMENT_UPLOAD_MAX_SIZE)}.'}
+                )
+            questions = parse_document(upload, suffix)
+            if not 1 <= len(questions) <= MAX_QUESTIONS_PER_SESSION:
+                raise serializers.ValidationError(
+                    f'Потрібно від 1 до {MAX_QUESTIONS_PER_SESSION} питань, а у файлі знайдено {len(questions)}. '
+                    'Питанням вважається рядок зі знаком «?» у кінці або зі словом на кшталт «Поясни» на початку.'
+                )
         else:
-            text = attrs['text']
-        questions = [line.strip() for line in text.splitlines() if line.strip()]
-        if not 1 <= len(questions) <= MAX_QUESTIONS_PER_SESSION:
-            raise serializers.ValidationError(
-                f'Потрібно від 1 до {MAX_QUESTIONS_PER_SESSION} питань: одне на рядок.'
-            )
+            if upload is not None:
+                if suffix != '.txt' or upload.size > settings.FILE_UPLOAD_MAX_SIZE:
+                    raise serializers.ValidationError({'file': (
+                        f'Потрібен TXT до {format_size(settings.FILE_UPLOAD_MAX_SIZE)} у UTF-8 '
+                        f'або PDF чи DOCX до {format_size(settings.DOCUMENT_UPLOAD_MAX_SIZE)}.'
+                    )})
+                try:
+                    text = upload.read().decode('utf-8-sig')
+                except UnicodeDecodeError as exc:
+                    raise serializers.ValidationError({'file': 'Кодування файлу має бути UTF-8.'}) from exc
+            else:
+                text = attrs['text']
+            questions = [line.strip() for line in text.splitlines() if line.strip()]
+            if not 1 <= len(questions) <= MAX_QUESTIONS_PER_SESSION:
+                raise serializers.ValidationError(
+                    f'Потрібно від 1 до {MAX_QUESTIONS_PER_SESSION} питань: одне на рядок.'
+                )
         if any(len(question) > 2000 or '\x00' in question for question in questions):
             raise serializers.ValidationError('Питання: до 2000 символів, без нульових байтів.')
         return {'questions': questions}
